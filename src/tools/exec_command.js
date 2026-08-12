@@ -83,18 +83,24 @@ export async function execute(input, ctx) {
           // 输出尾部拼进 summary：断开/结束后历史记录里能看到会话最终输出
           //（类似 subagent 返回结果，避免输出只活在会话卡里）。
           const tail = info.outputTail ? `\n\n── 输出尾部 ──\n${info.outputTail}` : "";
+          // 输出尾部同步进 output：卡片「完整输出」展开可读（会话日志全文在
+          // session 文件，结局 result 带 HRD://session 引用；此处只填尾部，
+          // 避免交互会话长缓冲撑爆卡片）。
+          const output = info.outputTail || "";
           if (info.how === "exit") {
             rd.operations.updateHistory(ttyHistId, {
               status: "ok",
               exitCode: info.exitCode,
               durationMs: info.durationMs,
               summary: `会话结束 (exit ${info.exitCode})${tail}`,
+              output,
             });
           } else if (info.how === "killed") {
             rd.operations.updateHistory(ttyHistId, {
               status: "killed",
               durationMs: info.durationMs,
               summary: `会话已终止${tail}`,
+              output,
             });
           } else if (info.how === "disconnect") {
             rd.operations.updateHistory(ttyHistId, {
@@ -102,6 +108,7 @@ export async function execute(input, ctx) {
               reason: "disconnect",
               durationMs: info.durationMs,
               summary: `已断开：会话终止${tail}`,
+              output,
             });
           } else {
             rd.operations.updateHistory(ttyHistId, {
@@ -109,6 +116,7 @@ export async function execute(input, ctx) {
               reason: "lost",
               durationMs: info.durationMs,
               summary: `会话中断${tail}`,
+              output,
             });
           }
           // 自动唤醒：会话结局 → deferred 终态（register 结局时动态决策策略，

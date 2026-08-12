@@ -193,6 +193,9 @@ export function recordHistory(entry) {
 export function updateHistory(id, patch) {
   const rec = readHistoryFromDisk(id);
   if (!rec) return false;
+  if (patch.output !== undefined) {
+    patch.output = String(patch.output || "").slice(0, OUTPUT_MAX_CHARS);
+  }
   Object.assign(rec, patch);
   // tty 会话结局回写：补一条 closed 行（启动行的状态是会话创建，非终局）
   appendOpLogLine(opLogLine({
