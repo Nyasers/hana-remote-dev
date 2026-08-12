@@ -96,3 +96,35 @@ logs/
 npm run build   # rspack 构建 → dist/
 npm run package # 打包 → releases/hana-remote-dev-<version>.zip + .sha256
 ```
+
+### 发布流程（日常发版）
+
+版本单一事实源：package.json（`npm run version` 自动同步 manifest / 构建产物版本号）。
+
+```bash
+# 0. 前置：工作区必须干净（version.mjs 强制校验，有未提交改动会拒绝执行）
+#    因此源码改动先 commit，再走发版
+
+npm test                  # 1. 单测回归（当前 65 例）
+npm run build             # 2. 构建（Rspack，terser 压缩，dist/ 不入库）
+npm run version -- patch  # 3. bump 版本（patch|minor）→ 自动 package + commit + tag vX.Y.Z
+                          #    （CI 由 tag 触发，多平台构建）
+
+git push origin master    # 4. 推送主分支
+git push origin vX.Y.Z    # 5. 显式单 tag 推送（bulk --tags 会被 GitHub 安全策略拦截，tag 必须单独推）
+
+# 6. 等待 CI 完成（排队等托管 runner 是正常现象，in_progress 后约 3-5 分钟）
+gh run watch <run-id> --repo Nyasers/hana-remote-dev --exit-status
+
+# 7. 下载 Windows 发布资产（与本地 dist 有行尾符/注释字节差异，代码一致；正式安装一律走 CI 产物）
+gh release download vX.Y.Z --repo Nyasers/hana-remote-dev --pattern "hana-remote-dev-*-Windows-x64.zip*" --clobber
+
+# 8. 校验 SHA256
+#    Get-FileHash <zip> -Algorithm SHA256 对比 .sha256 文件
+```
+
+注意：
+
+- **宿主安装 zip ≠ 插件实例重载**：文件覆盖后需在插件管理页重载插件或重启宿主，否则运行的仍是内存中的旧 bundle（v0.9.4 实测踩坑）。
+- `npm run version` 前必须 commit 源码改动；版本号只能向上（patch → minor → …），不能回退。
+- CI 的 action 版本需保持 node24 运行时（upload/download-artifact 已升 v6/v8），避免 GitHub 强制迁移告警。
