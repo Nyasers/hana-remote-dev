@@ -3,7 +3,7 @@
 #
 # 关键设计（借鉴宿主）:
 #   - matrix include + fail-fast: false（三平台互不拖累）
-#   - release job 单点控制: draft release 创建、上传、资产核验都在这一个 job（防并发覆盖）
+#   - release job 单点控制: pre-release 创建、上传、资产核验都在这一个 job（防并发覆盖）
 #   - Verify release assets 硬约束: 三平台 zip + sha256 缺一 CI fail（防 shell 写漏/构建挂）
 #   - 平台限定文件名: hana-remote-dev-<ver>-<platform>.zip（防同名不同内容互相覆盖）
 #
@@ -103,8 +103,8 @@ jobs:
         with:
           path: artifacts
 
-      # 所有 Release 默认 draft + pre-release，稳定版本手动在 GitHub 标记 latest
-      - name: Create draft release
+      # 自动发布为 pre-release（不占 latest 标记，稳定版本手动标记）；已存在则跳过
+      - name: Create pre-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -112,7 +112,6 @@ jobs:
             echo "Release ${{ github.ref_name }} already exists, skipping create"
           else
             gh release create "${{ github.ref_name }}" \
-              --draft \
               --prerelease \
               --title "${{ github.ref_name }}" \
               --generate-notes
@@ -150,6 +149,8 @@ jobs:
           if [ ${#MISSING[@]} -gt 0 ]; then
             echo "::error::Missing required release assets:"
             printf '  %s\n' "${MISSING[@]}"
+            # 公开 release 不留残缺：verify 失败即删除，下次重跑时重建
+            gh release delete "${{ github.ref_name }}" --yes
             exit 1
           fi
           echo "All required assets present ✓"
