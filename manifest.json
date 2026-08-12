@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "hana-remote-dev",
   "name": "Remote Development",
-  "version": "0.8.6",
+  "version": "0.8.7",
   "description": "SSH remote development tools for Hanako — connect, execute, and manage files on remote machines.",
   "minAppVersion": "0.171.3",
   "trust": "full-access",
