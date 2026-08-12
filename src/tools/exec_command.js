@@ -220,9 +220,11 @@ export async function execute(input, ctx) {
       });
       // deferred 注册：完成即唤醒宿主 Agent（卡片完成 = 任务终态 = 宿主原生钩子）。
       // 结果随 hana-background-result 直接送达，Agent 无需信标二次查询。
+      // bus 优先用工具执行 ctx（宿主按调用注入，与 download-progress 同源）；
+      // runtime.bus（install 时 ctx）仅兑底。
       const live0 = runtimeHolder.current;
       await wake.registerDeferredWake({
-        bus: live0?.bus,
+        bus: ctx.bus ?? live0?.bus,
         sessionPath: ctx.sessionPath,
         taskId: opId,
         label: input.command,
@@ -286,7 +288,7 @@ export async function execute(input, ctx) {
           writeCommandLog(rd, input, connId, result, { status: st, reason: rs, started });
           // deferred 终态：完成结果送达宿主（默认唤醒 Agent 回合；wakeOnExit=false 仅记录）
           wake.resolveDeferredWake({
-            bus: runtimeHolder.current?.bus,
+            bus: ctx.bus ?? runtimeHolder.current?.bus,
             taskId: opId,
             result: {
               opId,
@@ -322,7 +324,7 @@ export async function execute(input, ctx) {
           rd.operations.endOperation(opId);
           // deferred 失败终态：notifyAgentOnFailure=true → 宿主唤醒 Agent 决策
           wake.failDeferredWake({
-            bus: runtimeHolder.current?.bus,
+            bus: ctx.bus ?? runtimeHolder.current?.bus,
             taskId: opId,
             error: {
               message: `${timedOut ? "timeout" : "error"}: ${(timedOut ? `命令超时（超过 ${input.timeout || 30}s）` : String(err?.message || err)).slice(0, 300)}`,
