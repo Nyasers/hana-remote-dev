@@ -15,6 +15,10 @@
     "clean-css": "^5.3.3",
     "terser": "^5.50.0"
   },
+  "trustedDependencies": [
+    "cpu-features",
+    "ssh2"
+  ],
   "scripts": {
     "build": "rspack build --config rspack.config.mjs && node src/scripts/copy-native.mjs && node src/scripts/sync-release.mjs",
     "build:watch": "rspack build --config rspack.config.mjs --watch",
