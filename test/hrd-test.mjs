@@ -225,7 +225,7 @@ section("cleanupSessionLogs（昨日归档 + 空间兜底 + 活跃保护）");
   mk(root, day(2), ["a.md", "b.md"]);
   mk(root, day(1), ["c.md"]);
   mk(root, day(0), ["d.md"]);
-  sessionLog.cleanupSessionLogs(path.join(root, "sessions"), { maxBytes: 0 });
+  sessionLog.cleanupSessionLogs(path.join(root, "sessions"), {});
   check("昨日及更早归档删除", !fs.existsSync(path.join(root, "sessions", day(2))) && !fs.existsSync(path.join(root, "sessions", day(1))));
   check("今天保留", fs.existsSync(path.join(root, "sessions", day(0), "d.md")));
   check("归档就地生成 tar.gz", fs.readdirSync(path.join(root, "sessions")).some((f) => f.endsWith(".tar.gz")));
@@ -242,58 +242,33 @@ section("cleanupSessionLogs（昨日归档 + 空间兜底 + 活跃保护）");
   mk(root5, day(0), ["y.md"]);
   const staleMtime = new Date(fs.statSync(path.join(root5, "sessions", day(0), "y.md")).mtimeMs + 60000);
   fs.utimesSync(path.join(root5, "sessions", day(1), "x.md"), staleMtime, staleMtime);
-  sessionLog.cleanupSessionLogs(path.join(root5, "sessions"), { maxBytes: 0 });
+  sessionLog.cleanupSessionLogs(path.join(root5, "sessions"), {});
   check("mtime 倒挂仍按目录日期归档", !fs.existsSync(path.join(root5, "sessions", day(1))) && fs.existsSync(path.join(root5, "sessions", day(0), "y.md")));
   // 活跃引用保护：命中的组延迟归档，引用释放后归档
   const root2 = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean2-"));
   mk(root2, day(1), ["a.md"]);
   const activePath = path.join(root2, "sessions", day(1), "a.md");
-  sessionLog.cleanupSessionLogs(path.join(root2, "sessions"), { maxBytes: 0, activePaths: new Set([activePath]) });
+  sessionLog.cleanupSessionLogs(path.join(root2, "sessions"), { activePaths: new Set([activePath]) });
   check("活跃引用的目录不归档", fs.existsSync(activePath));
-  sessionLog.cleanupSessionLogs(path.join(root2, "sessions"), { maxBytes: 0, activePaths: new Set() });
+  sessionLog.cleanupSessionLogs(path.join(root2, "sessions"), { activePaths: new Set() });
   check("引用释放后归档", !fs.existsSync(activePath));
-  // 空间兜底：窗口内超限 → 归档最旧
-  const root3 = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean3-"));
-  const mk3 = (group, bytes) => {
-    const g = path.join(root3, "sessions", group);
-    fs.mkdirSync(g, { recursive: true });
-    fs.writeFileSync(path.join(g, "x.md"), "x".repeat(bytes), "utf8");
-  };
-  mk3(day(1), 2000);
-  mk3(day(0), 2000);
-  sessionLog.cleanupSessionLogs(path.join(root3, "sessions"), { maxBytes: 3000, retentionDays: 0 });
-  check("空间兜底归档最旧", !fs.existsSync(path.join(root3, "sessions", day(1))) && fs.existsSync(path.join(root3, "sessions", day(0), "x.md")));
-  // 归档有界：tar.gz 超配额 → 删最旧
-  const root4 = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean4-"));
-  const gzDir = path.join(root4, "sessions");
-  fs.mkdirSync(gzDir, { recursive: true });
-  fs.writeFileSync(path.join(gzDir, "old.tar.gz"), "x".repeat(3000), "utf8");
-  fs.writeFileSync(path.join(gzDir, "new.tar.gz"), "x".repeat(3000), "utf8");
-  const oldT = new Date(Date.now() - 5 * 86400000);
-  fs.utimesSync(path.join(gzDir, "old.tar.gz"), oldT, oldT);
-  sessionLog.cleanupSessionLogs(gzDir, { maxBytes: 4000 });
-  check("归档超配额删最旧", !fs.existsSync(path.join(gzDir, "old.tar.gz")) && fs.existsSync(path.join(gzDir, "new.tar.gz")));
   fs.rmSync(root, { recursive: true, force: true });
   fs.rmSync(root2, { recursive: true, force: true });
-  fs.rmSync(root3, { recursive: true, force: true });
-  fs.rmSync(root4, { recursive: true, force: true });
 }
 
 // ---------- plugin-config ----------
 section("plugin-config（config.json 唯一源）");
 {
   const dirCfg = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-cfg-"));
-  const d2 = sessionLog.saveSessionLogConfig(dirCfg, { maxMB: 16, maxTotalMB: 0 });
-  check("saveSessionLogConfig 生效", d2.maxMB === 16 && d2.maxTotalMB === 0);
-  const d3 = sessionLog.loadSessionLogConfig(dirCfg);
-  check("保存后读回一致", d3.maxMB === 16 && d3.maxTotalMB === 0);
   const pc = pluginCfg.loadPluginConfig(dirCfg);
-  check("统一配置写入 config.json 且 idleTimeout 默认保留", fs.existsSync(path.join(dirCfg, "config.json")) && !fs.existsSync(path.join(dirCfg, "session-log.json")) && pc.idleTimeout === 300);
-  const saved2 = pluginCfg.savePluginConfig(dirCfg, { idleTimeout: 600 });
-  check("idleTimeout 可保存且不丢 sessionLog", saved2.idleTimeout === 600 && saved2.sessionLog.maxMB === 16);
+  check("无配置文件回退默认", pc.idleTimeout === 300);
+  const saved = pluginCfg.savePluginConfig(dirCfg, { idleTimeout: 600 });
+  check("保存 idleTimeout 生效", saved.idleTimeout === 600 && fs.existsSync(path.join(dirCfg, "config.json")));
+  const pc2 = pluginCfg.loadPluginConfig(dirCfg);
+  check("保存后读回一致", pc2.idleTimeout === 600);
   fs.writeFileSync(path.join(dirCfg, "config.json"), "{broken json", "utf8");
   const d4 = pluginCfg.loadPluginConfig(dirCfg);
-  check("损坏配置回退默认", d4.sessionLog.maxMB === 8 && d4.sessionLog.maxTotalMB === 32 && d4.idleTimeout === 300);
+  check("损坏配置回退默认", d4.idleTimeout === 300);
   fs.rmSync(dirCfg, { recursive: true, force: true });
 }
 

@@ -18,24 +18,6 @@ export { loadPluginConfig, savePluginConfig };
 
 const FLUSH_DELAY_MS = 500;
 const FLUSH_FORCE_BYTES = 64 * 1024;
-const SESSION_LOG_BYTES = 32 * 1024 * 1024; // 目录总字节上限
-const SESSION_FILE_MAX_BYTES = 8 * 1024 * 1024; // 单文件上限：防止单个长驻会话无限膨胀
-
-// 面板可配的会话日志上限（0 = 不设限；MB 单位）。
-// 只控制空间占用：单文件 + 目录总字节；文件数不设限（字节上限已兜底）。
-// 配置统一存 dataDir/config.json（plugin-config），面板为唯一入口。
-export const DEFAULT_SESSION_LOG_CFG = { maxMB: 8, maxTotalMB: 32 };
-
-/** 读取会话日志两限（来自统一配置 dataDir/config.json）。 */
-export function loadSessionLogConfig(dir) {
-  return loadPluginConfig(dir).sessionLog;
-}
-
-/** 保存会话日志两限（写入统一配置 dataDir/config.json，保留其他字段）。 */
-export function saveSessionLogConfig(dir, { maxMB, maxTotalMB } = {}) {
-  const cur = loadPluginConfig(dir);
-  return savePluginConfig(dir, { sessionLog: { maxMB, maxTotalMB }, idleTimeout: cur.idleTimeout }).sessionLog;
-}
 
 // conn/cfg 事件日志（append-only 单文件，2MB 硬上限，超限停止并标注一次）
 const EVENT_LOG_MAX_BYTES = 2 * 1024 * 1024;
@@ -225,31 +207,14 @@ export function extractTarGz(gzBuf, name) {
 const SESSION_RETENTION_DAYS = 1;
 
 /** 清理会话日志：
- *  时间主策略：日期目录早于保留窗口（默认 1 天，昨日归档）且无活跃引用 → 就地打包 sessions/<date>.tar.gz 后删除原目录；
- *  空间兜底：窗口内日志总字节仍超 maxBytes → 继续归档最旧（0 = 空间不设限）；
- *  归档有界：tar.gz 累积超 maxBytes → 删除最旧归档。
- * @param {string} dir - session 日志目录
- * @param {object} [opts] - { maxBytes, retentionDays, activePaths }
- *   maxBytes 缺省默认常量；0 = 空间不设限
+ *  时间主策略：日期目录早于保留窗口（默认 1 天，昨日归档）且无活跃引用 → 就地打包 sessions/<date>.tar.gz 后删除原目录。
+ *  不设空间限制：按天不可变，归档后体积自然有界，文件多大都按窗口归档。
+ * @param {string} dir - 会话日志目录
+ * @param {object} [opts] - { retentionDays, activePaths }
  *   retentionDays 缺省 1（昨日归档）；0 = 不做时间归档
  *   activePaths 活跃会话日志文件路径集合（Set<string>）；命中的组跳过归档（延迟到会话结束后） */
-export function cleanupSessionLogs(dir, { maxBytes = SESSION_LOG_BYTES, retentionDays = SESSION_RETENTION_DAYS, activePaths = null } = {}) {
+export function cleanupSessionLogs(dir, { retentionDays = SESSION_RETENTION_DAYS, activePaths = null } = {}) {
   try {
-    // 1) 归档有界：tar.gz 累积超配额 → 删最旧
-    const gzFiles = fs.readdirSync(dir)
-      .filter((f) => f.endsWith(".tar.gz"))
-      .map((f) => path.join(dir, f))
-      .sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
-    let gzTotal = gzFiles.reduce((s, f) => s + fs.statSync(f).size, 0);
-    while (maxBytes > 0 && gzFiles.length > 0 && gzTotal > maxBytes) {
-      const f = gzFiles.shift();
-      try {
-        gzTotal -= fs.statSync(f).size;
-        fs.unlinkSync(f);
-      } catch {
-        /* 删除失败保留 */
-      }
-    }
     // 2) 聚合分组（日期目录 / 平铺存量文件），按最早 mtime 排序
     const groups = [];
     for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -280,13 +245,10 @@ export function cleanupSessionLogs(dir, { maxBytes = SESSION_LOG_BYTES, retentio
     };
     groups.sort((a, b) => groupDate(a) - groupDate(b));
     const cutoff = retentionDays > 0 ? Date.now() - retentionDays * 86400000 : 0;
-    let total = groups.reduce((s, g) => s + g.total, 0);
     const hasActive = (g) => activePaths && g.files.some((f) => activePaths.has(f));
     while (groups.length > 0) {
       const g = groups[0];
-      const old = cutoff > 0 && groupDate(g) < cutoff;
-      const over = maxBytes > 0 && total > maxBytes;
-      if (!old && !over) break;
+      if (cutoff <= 0 || groupDate(g) >= cutoff) break; // 窗口内（或不做时间归档）停
       groups.shift();
       if (hasActive(g)) continue; // 活跃会话引用：延迟归档，下次触发再试
       try {
@@ -299,9 +261,8 @@ export function cleanupSessionLogs(dir, { maxBytes = SESSION_LOG_BYTES, retentio
             /* 目录非空（如残留文件）：保留 */
           }
         }
-        total -= g.total;
       } catch {
-        /* 归档失败则不删（宁可超限也不丢数据） */
+        /* 归档失败则不删（宁可保留也不丢数据） */
       }
     }
   } catch {
@@ -337,9 +298,8 @@ const HOW_TEXT = {
  * @returns {object|null} logger（初始化失败返回 null）：
  *   { filePath, appendOutput(text), appendInput(chars), finalize(info) }
  */
-export function createSessionLogger({ dir, sessionId, connId, command, startedAt, maxFileBytes = SESSION_FILE_MAX_BYTES, kind = "tty", opId = null }) {
+export function createSessionLogger({ dir, sessionId, connId, command, startedAt, kind = "tty", opId = null }) {
   let filePath;
-  let headBytes = 0;
   try {
     // 文件名按日编排：sessions/<yyyy-mm-dd>/<sessionId>.md
     filePath = path.join(dir, sessionFileName(sessionId, startedAt));
@@ -360,7 +320,6 @@ export function createSessionLogger({ dir, sessionId, connId, command, startedAt
       "",
     ].join("\n");
     fs.writeFileSync(filePath, head, "utf8");
-    headBytes = Buffer.byteLength(head, "utf8");
   } catch {
     return null;
   }
@@ -369,8 +328,6 @@ export function createSessionLogger({ dir, sessionId, connId, command, startedAt
   let timer = null;
   let closed = false;
   let ok = true;
-  let written = headBytes; // 已落盘字节（头部起始）
-  let droppedBytes = 0; // 超单文件上限后丢弃的字节（结局段标注）
 
   const flush = () => {
     if (timer) {
@@ -380,15 +337,8 @@ export function createSessionLogger({ dir, sessionId, connId, command, startedAt
     if (!pending) return;
     const text = pending;
     pending = "";
-    const bytes = Buffer.byteLength(text, "utf8");
-    // 单文件上限：任一批次导致累计超限即整批丢弃（append-only 无法回头截断，有界优先）；maxFileBytes=0 时不设限
-    if (maxFileBytes > 0 && written + bytes > maxFileBytes) {
-      droppedBytes += bytes;
-      return;
-    }
     try {
       fs.appendFileSync(filePath, text, "utf8");
-      written += bytes;
     } catch {
       ok = false;
       pending = text; // 写失败保留，等待下次尝试
@@ -427,11 +377,6 @@ export function createSessionLogger({ dir, sessionId, connId, command, startedAt
         timer = null;
       }
       const howText = info.howText || (HOW_TEXT[info.how] || (() => String(info.how || "closed")))(info.exitCode);
-      // 未 flush 的输出批次：若累计超限则丢弃（不落盘），只保留结局段；maxFileBytes=0 时不设限
-      if (maxFileBytes > 0 && written + Buffer.byteLength(pending, "utf8") > maxFileBytes) {
-        droppedBytes += Buffer.byteLength(pending, "utf8");
-        pending = "";
-      }
       const tail = [
         "",
         `## 结局`,
@@ -440,7 +385,6 @@ export function createSessionLogger({ dir, sessionId, connId, command, startedAt
         `- 耗时: ${Math.round((info.durationMs || 0) / 1000)}s`,
         `- 起止: ${info.startedAt?.toISOString?.() || info.startedAt} → ${info.endedAt?.toISOString?.() || info.endedAt}`,
         `- 输出: ${info.outputBytes ?? 0} bytes${info.truncated ? "（超过 1MB 活跃缓冲上限，最早部分已丢弃）" : ""}`,
-        ...(droppedBytes > 0 ? [`- 日志: 截断（超过单文件上限，${droppedBytes} bytes 未落盘）`] : []),
         "",
       ].join("\n");
       pending += tail;

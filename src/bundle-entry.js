@@ -24,8 +24,6 @@ import {
   setIdleTimeout,
   setSessionLogDir,
   setEventLogDir,
-  setSessionLogMaxBytes,
-  setSessionLogMaxTotalBytes,
   startIdleManager,
   stopIdleManager,
 } from "./lib/ssh-client.js";
@@ -337,11 +335,9 @@ export async function install(ctx) {
   // 操作日志目录：并入统一事件流（events/<date>.jsonl，type="op"）
   setOperationLogDir(logsDir);
 
-  // 统一配置（dataDir/config.json，面板唯一入口）：会话日志两限 + 空闲兜底 TTL
+  // 统一配置（dataDir/config.json，面板唯一入口）：空闲兜底 TTL
   // （主路径为事件驱动释放：exec/sftp 结束、tty 会话关闭即断；此 TTL 只兜异常残留）
   const pcfg = sessionLog.loadPluginConfig(dataDir);
-  setSessionLogMaxBytes(pcfg.sessionLog.maxMB > 0 ? pcfg.sessionLog.maxMB * 1024 * 1024 : 0);
-  setSessionLogMaxTotalBytes(pcfg.sessionLog.maxTotalMB > 0 ? pcfg.sessionLog.maxTotalMB * 1024 * 1024 : 0);
   setIdleTimeout(pcfg.idleTimeout);
   startIdleManager();
   // 初始化补归档：插件重启/首启时检查滑出窗口的日期目录（离线多日后的补处理），每日节流仍生效

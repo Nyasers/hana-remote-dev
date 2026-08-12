@@ -885,20 +885,12 @@ let eventLogDir = null;
 function connLabel(cfg) {
   return cfg.alias || cfg.host || "?";
 }
-// 空间两限（0 = 不设限）：由 bundle-entry 从面板配置注入。
-let sessionLogMaxBytes = 8 * 1024 * 1024; // 单文件
-let sessionLogMaxTotalBytes = 32 * 1024 * 1024; // 目录总字节
-
 export function setSessionLogDir(dir) {
   sessionLogDir = dir || null;
 }
 
 export function setEventLogDir(dir) {
   eventLogDir = dir || null;
-}
-
-export function setSessionLogMaxBytes(bytes) {
-  sessionLogMaxBytes = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
 }
 
 // 惰性日切归档的每日节流：归档检查（扫描+打包）每天最多一次，高频调用点只付日期比较成本
@@ -915,19 +907,7 @@ export function rollSessionLogs(force = false) {
   lastRollCheckDay = today;
   const activePaths = new Set();
   for (const s of sessions.values()) if (s.logger?.filePath) activePaths.add(s.logger.filePath);
-  sessionLog.cleanupSessionLogs(sessionLogDir, { maxBytes: sessionLogMaxTotalBytes, activePaths });
-}
-
-export function setSessionLogMaxTotalBytes(bytes) {
-  sessionLogMaxTotalBytes = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
-}
-
-/** 当前生效的两限（面板回显；MB 单位，0 = 不设限）。 */
-export function getSessionLogLimits() {
-  return {
-    maxMB: sessionLogMaxBytes > 0 ? Math.round(sessionLogMaxBytes / (1024 * 1024)) : 0,
-    maxTotalMB: sessionLogMaxTotalBytes > 0 ? Math.round(sessionLogMaxTotalBytes / (1024 * 1024)) : 0,
-  };
+  sessionLog.cleanupSessionLogs(sessionLogDir, { activePaths });
 }
 
 /** 指定会话的日志文件路径（不存在返回 null）。 */
@@ -1022,7 +1002,6 @@ export function createSession(connId, command, opts = {}) {
             connId,
             command: String(command),
             startedAt: sess.startedAt,
-            maxFileBytes: sessionLogMaxBytes,
           })
         : null;
       sess.logger = logger;

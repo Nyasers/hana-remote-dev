@@ -472,7 +472,7 @@ function renderList(profiles) {
   resize();
 }
 
-/** 会话日志三限配置（窗口式，对齐新增配置 modal）。
+/** 插件配置（窗口式，对齐新增配置 modal）。
  * 主页胶囊合并展示：● 状态 | 心跳时间 | 日志总大小（30s 自刷新大小段）。 */
 let logCfgTimer = null;
 let logCfgSizeTimer = null;
@@ -520,18 +520,6 @@ function openLogCfgModal() {
   const modal = el("div", { class: "overlay", onclick: (e) => { if (e.target === modal) closeModal(); } }, [
     el("div", { class: "modal", id: "logcfg-modal" }, [
       el("h2", {}, ["插件配置"]),
-      el("p", { class: "logcfg-section" }, ["会话日志"]),
-      el("div", { class: "field-row" }, [
-        el("div", { class: "field" }, [
-          el("span", {}, ["单文件 (MB)"]),
-          el("input", { type: "number", min: "0", step: "1", id: "logcfg-maxmb", class: "field-input" }),
-        ]),
-        el("div", { class: "field" }, [
-          el("span", {}, ["目录总大小 (MB)"]),
-          el("input", { type: "number", min: "0", step: "1", id: "logcfg-maxtotal", class: "field-input" }),
-        ]),
-      ]),
-      el("small", { class: "field-hint" }, ["0 = 不设限。时间归档为主：昨日自动打包 tar.gz（按天不可变、可解压还原）；空间限制仅兜底异常——单文件超限截断、目录超限归档最旧。"]),
       el("p", { class: "logcfg-section" }, ["连接"]),
       el("div", { class: "field" }, [
         el("span", {}, ["空闲回收 (秒)"]),
@@ -552,9 +540,7 @@ function openLogCfgModal() {
     rpc("session-log:get")
       .then((res) => {
         if (!res?.ok) return;
-        const { limits, idleTimeout } = res.data;
-        m.querySelector("#logcfg-maxmb").value = limits.maxMB;
-        m.querySelector("#logcfg-maxtotal").value = limits.maxTotalMB;
+        const { idleTimeout } = res.data;
         m.querySelector("#logcfg-idle").value = idleTimeout;
       })
       .catch(() => {});
@@ -575,18 +561,16 @@ function openLogCfgModal() {
 async function submitLogCfg() {
   const modal = document.getElementById("logcfg-modal");
   if (!modal) return;
-  const maxMB = Number(modal.querySelector("#logcfg-maxmb").value);
-  const maxTotalMB = Number(modal.querySelector("#logcfg-maxtotal").value);
   const idleTimeout = Number(modal.querySelector("#logcfg-idle").value);
-  if (![maxMB, maxTotalMB].every((v) => Number.isFinite(v) && v >= 0) || !Number.isFinite(idleTimeout) || idleTimeout < 1) {
-    showToast("请输入非负整数（0 = 不设限）；空闲回收 ≥ 1 秒", "error");
+  if (!Number.isFinite(idleTimeout) || idleTimeout < 1) {
+    showToast("空闲回收需为 ≥ 1 的整数（秒）", "error");
     return;
   }
   try {
-    const res = await rpc("session-log:set", { maxMB, maxTotalMB, idleTimeout });
+    const res = await rpc("session-log:set", { idleTimeout });
     if (!res?.ok) throw new Error(res?.error ?? "保存失败");
     refreshLogCfgSize(); // 保存后立即刷新胶囊大小段
-    showToast("会话日志上限已保存", "ok");
+    showToast("插件配置已保存", "ok");
   } catch (err) {
     showToast(err.message, "error");
   }

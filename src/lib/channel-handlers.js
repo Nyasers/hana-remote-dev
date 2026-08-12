@@ -9,16 +9,15 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { listConnections, isConnected, connect, disconnect, listSessions, killSession, getSessionLogLimits, setSessionLogMaxBytes, setSessionLogMaxTotalBytes, setIdleTimeout, rollSessionLogs } from "./ssh-client.js";
+import { listConnections, isConnected, connect, disconnect, listSessions, killSession, setIdleTimeout, rollSessionLogs } from "./ssh-client.js";
 import { listOperations, killOperation, listHistory } from "./operations.js";
-import { loadSessionLogConfig, appendEventLog, eventTs, describeProfileDiff } from "./session-log.js";
+import { appendEventLog, eventTs, describeProfileDiff } from "./session-log.js";
 import { loadPluginConfig, savePluginConfig } from "./plugin-config.js";
 
-// ---- 会话日志三限（面板配置） ----
+// ---- 会话日志配置（面板） ----
 
-/** 当前配置（两限 + idleTimeout）+ 实际占用（logs/ 全量：事件流 + 会话回放 + 归档）。 */
+/** 当前配置（idleTimeout）+ 实际占用（logs/ 全量：事件流 + 会话回放 + 归档）。 */
 export function handleSessionLogGet(runtime) {
-  const limits = getSessionLogLimits();
   const pcfg = loadPluginConfig(runtime.dataDir);
   let files = 0;
   let bytes = 0;
@@ -37,23 +36,17 @@ export function handleSessionLogGet(runtime) {
   } catch {
     /* 目录不存在/不可读：按空处理 */
   }
-  return { ok: true, data: { limits, idleTimeout: pcfg.idleTimeout, actual: { files, bytes } } };
+  return { ok: true, data: { idleTimeout: pcfg.idleTimeout, actual: { files, bytes } } };
 }
 
-/** 保存插件配置（持久化 dataDir/config.json）+ 立即应用 + 立即清理一次。 */
+/** 保存插件配置（持久化 dataDir/config.json）+ 立即应用 + 立即归档检查一次。 */
 export function handleSessionLogSet(runtime, payload) {
   try {
-    const clean = savePluginConfig(runtime.dataDir, {
-      sessionLog: { maxMB: payload?.maxMB, maxTotalMB: payload?.maxTotalMB },
-      idleTimeout: payload?.idleTimeout,
-    });
-    const sl = clean.sessionLog;
-    setSessionLogMaxBytes(sl.maxMB > 0 ? sl.maxMB * 1024 * 1024 : 0);
-    setSessionLogMaxTotalBytes(sl.maxTotalMB > 0 ? sl.maxTotalMB * 1024 * 1024 : 0);
+    const clean = savePluginConfig(runtime.dataDir, { idleTimeout: payload?.idleTimeout });
     setIdleTimeout(clean.idleTimeout);
-    rollSessionLogs(true); // 配置变更后强制检查（限额变化需立即收敛，绕过每日节流）
-    appendEventLog(runtime.logsDir, { type: "config:set", maxMB: sl.maxMB, maxTotalMB: sl.maxTotalMB, idleTimeout: clean.idleTimeout, source: "panel" });
-    return { ok: true, data: { limits: getSessionLogLimits(), idleTimeout: clean.idleTimeout } };
+    rollSessionLogs(true); // 配置变更后强制检查（绕过每日节流，立即收敛）
+    appendEventLog(runtime.logsDir, { type: "config:set", idleTimeout: clean.idleTimeout, source: "panel" });
+    return { ok: true, data: { idleTimeout: clean.idleTimeout } };
   } catch (err) {
     // 失败路径也留审计痕迹（配置未生效但至少可追溯）
     try {
