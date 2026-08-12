@@ -21,6 +21,8 @@
     "build": "rspack build --config rspack.config.mjs && node src/scripts/copy-native.mjs && node src/scripts/sync-release.mjs",
     "build:watch": "rspack build --config rspack.config.mjs --watch",
     "package": "node scripts/package.mjs",
-    "test": "node test/hrd-test.mjs"
+    "test": "node test/hrd-test.mjs",
+    "version": "node scripts/version.mjs",
+    "version:sync": "node scripts/version-sync.mjs"
   }
 }
