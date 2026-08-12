@@ -27,7 +27,7 @@ HRD 插件让 Hanako 能像在本地一样操作远程主机（文件、命令�
 | 组 | 工具 |
 |---|---|
 | **资源协议端点** | `hrd`（RESTful URI：连接/配置/会话资源，见下） |
-| 执行 | `exec_command`（workdir/timeout/tty） / `write_stdin`（交互会话） |
+| 执行 | `exec_command`（workdir/timeout/tty/stream） / `write_stdin`（交互会话） |
 | 文件 | `read` / `write`（自动建目录、原子写） / `edit`（oldText 必须唯一） / `ls` |
 | 检索 | `grep`（regex/literal/大小写/上下文） / `find`（glob） |
 | 传输 | `file`（stat + copy：本地↔远程、远程↔远程） |
@@ -55,16 +55,18 @@ HRD 插件让 Hanako 能像在本地一样操作远程主机（文件、命令�
 
 **交互会话**：`exec_command(connectionId, command, tty: true)` 返回 `sessionId`，`write_stdin(sessionId, chars)` 喂输入并回读输出；会话空闲超时自动终止，断连级联终止。
 
+> ⚠️ tty 是 pty 执行传入的命令：**命令执行完会话即结束**。`echo` 这类短命令瞬间退出，write_stdin 随即报 `No active session`——不是故障，是会话已结束。要开交互 shell 用**长驻命令**：`exec_command(connectionId, command: "bash", tty: true)`（交互脚本同理，如 `python3 -i`）。
+
 > ⚠️ exec 通道不带交互 stdin：多行 heredoc 命令（`cat <<EOF` 等）不可靠，先 `write` 落盘脚本再执行，或改用 tty 会话。
 
 ## 会话结束后的查询
 
-tty 会话结束时，HRD 会向宿主会话发送一条 `[HRD://session/<sessionId>]` 信标。收到后按需查询：
+tty / stream 结束时，宿主 **deferred 自动投递**终局结果（`<hana-background-result>`，type=hrd-op）：payload 带 `how`（exit/killed/disconnect/lost）、`exitCode`、`outputTail` 与 `HRD://session/<id>` 引用，无需主动索取（wait 工具已退休）。需要全文时再查：
 
 1. **定位**：`hrd(uri: "HRD://session/<sessionId>")` 返回记录文件实际位置 + 结局摘要
 2. **内容**：拿到位置后自行决定查询方式——`read` 读全文（offset/limit 分段）、`grep` 搜特定模式、或宿主工具按需处理
 
-记录随会话运行增量落盘（进行中即可读），空间有界保留（单文件 / 总字节，面板可配），信标只带引用，内容按需自取。
+记录随会话运行增量落盘（进行中即可读），空间有界保留（单文件 / 总字节，面板可配），引用只带路径，内容按需自取。
 
 ## 插件配置（dataDir/config.json，面板唯一入口）
 
@@ -91,3 +93,4 @@ tty 会话结束时，HRD 会向宿主会话发送一条 `[HRD://session/<sessio
 - 连接超时：检查网络与端口
 - 认证失败：凭据未录或录错，重新提供
 - `unknown connection`：别名拼错，`hrd(GET HRD://connections)` 核对
+- `No active session`：tty 短命令已执行完退出；交互请用长驻命令（`bash`）
