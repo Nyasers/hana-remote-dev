@@ -73,7 +73,7 @@ export const parameters = {
 
 // ---- 路由解析（纯函数，可单测） ----
 
-const URI_RE = /^HRD:\/\/([a-z]+(?:\/[a-zA-Z0-9._-]+)*)$/i;
+const URI_RE = /^HRD:\/\/([a-z][a-z0-9-]*(?:\/[a-zA-Z0-9._-]+)*)$/i;
 
 /**
  * 解析 HRD URI。
@@ -105,6 +105,9 @@ export function parseHrdUri(uri, method, body) {
     if (mth === "PUT") return { kind: "connection-edit", alias };
     if (mth === "DELETE") return { kind: "connection-delete", alias };
     return { kind: "connection", alias };
+  }
+  if (segs[0] === "session-read" && segs.length === 2) {
+    return { kind: "session-read", id: segs[1] };
   }
   if (segs[0] === "session" && segs.length === 2) {
     return { kind: "session", id: segs[1] };
@@ -168,6 +171,8 @@ export async function execute(input, ctx) {
       return connectionDelete(rd, ctx, route.alias, input.body?.force === true);
     case "session":
       return sessionLocate(rd, ctx, route.id);
+    case "session-read":
+      return sessionRead(rd, ctx, route.id);
     case "sessions":
       return sessionsList(rd, ctx);
     case "guide":
@@ -268,9 +273,48 @@ function connectionDelete(rd, ctx, alias, force) {
   return tool("cfg_remove").execute({ connectionId: alias, ...(force ? { force: true } : {}) }, ctx);
 }
 
+/** HRD://session-read/<id> → 会话记录内容（活跃目录优先，归档包按需提取兜底）。
+ *  与 sessionLocate 互补：定位给位置，读取给内容（归档场景无法给出真实路径）。 */
+function sessionRead(rd, ctx, id) {
+  const live = rd.sshClient.listSessions().find((s) => s.sessionId === id);
+  const p = live?.logger?.filePath || resolveSessionDetail(id, rd.logsDir);
+  if (p && fs.existsSync(p)) {
+    const text = fs.readFileSync(p, "utf8");
+    return { content: [{ type: "text", text }], details: { sessionId: id, source: "file", bytes: Buffer.byteLength(text, "utf8") } };
+  }
+  const arch = resolveArchivedSession(id, rd.logsDir);
+  if (arch) {
+    const gz = fs.readFileSync(arch.gzPath);
+    const hit = sessionLog.extractTarGz(gz, arch.entry);
+    if (hit) {
+      return { content: [{ type: "text", text: hit.toString("utf8") }], details: { sessionId: id, source: "archive", bytes: hit.length } };
+    }
+  }
+  return { content: [{ type: "text", text: `会话 ${id} 无落盘记录（未找到活跃/归档文件）` }] };
+}
+
+/** HRD://session/<id> 归档兜底：按 sessionId 时间戳定位 session/<date>.tar.gz 包内条目。
+ * @returns {object|null} { gzPath, entry, size } */
+export function resolveArchivedSession(id, logsDir) {
+  if (!/^[A-Za-z0-9._-]+$/.test(String(id || ""))) return null;
+  const t = sessionLog.sessionIdTime(id);
+  if (!t) return null;
+  const dir = path.join(logsDir, "session");
+  const gzPath = path.join(dir, `${sessionLog.dayStamp(t)}.tar.gz`);
+  if (!fs.existsSync(gzPath)) return null;
+  try {
+    const entries = sessionLog.listTarGz(gzPath);
+    const hit = entries.find((e) => e.name === `${sessionLog.dayStamp(t)}/${id}.md` || e.name.endsWith(`/${id}.md`) || e.name.endsWith(`.${id}.md`));
+    if (!hit) return null;
+    return { gzPath, entry: hit.name, size: hit.size };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 会话定位：返回记录文件实际位置 + 结局摘要，内容访问由 agent 自行决定
- * （read 读全文 / grep 搜模式 / 宿主工具按需处理）。
+ * （read 读全文 / grep 搜模式 / 宿主工具按需处理；归档场景用 HRD://session-read/<id> 提取）。
  */
 function sessionLocate(rd, ctx, id) {
   // 位置：活跃会话 → 日志器路径；已结束 → 历史快照 logPath；否则按命名规则推测
@@ -278,6 +322,7 @@ function sessionLocate(rd, ctx, id) {
   const ended = rd.sshClient.getSessionHistory(id);
   const logPath = live?.logger?.filePath || ended?.logPath || resolveSessionDetail(id, rd.logsDir);
   const exists = logPath ? fs.existsSync(logPath) : false;
+  const arch = !exists && !live ? resolveArchivedSession(id, rd.logsDir) : null;
 
   const lines = [`会话 ${id}:`];
   if (live) {
@@ -294,12 +339,15 @@ function sessionLocate(rd, ctx, id) {
   }
   if (exists) {
     lines.push(`  记录: ${logPath}`, "  内容请用 read/grep 按需查询（会话进行中即可读）。");
+  } else if (arch) {
+    lines.push(`  记录: 已归档（${path.basename(arch.gzPath)} 内条目 ${arch.entry}，${arch.size} B）`);
+    lines.push("  内容: 可用 HRD://session-read/<id> 提取。");
   } else {
     lines.push("  记录: （无落盘文件）");
   }
   return {
     content: [{ type: "text", text: lines.join("\n") }],
-    details: { sessionId: id, active: !!live, summary: ended, logPath: exists ? logPath : null },
+    details: { sessionId: id, active: !!live, summary: ended, logPath: exists ? logPath : null, archived: arch ?? null },
   };
 }
 

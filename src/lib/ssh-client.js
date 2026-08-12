@@ -200,7 +200,7 @@ export function connect(opts) {
     const timer = setTimeout(() => {
       client.end();
       notifyConnectionChange(); // a replaced old connection may have been dropped
-      if (eventLogDir) sessionLog.appendEventLog(eventLogDir, "connection", `${sessionLog.eventTs()} connect timeout | ${opts.alias || opts.profileId || opts.host} | ${opts.username || "?"}@${opts.host}:${opts.port || 22}`);
+      if (eventLogDir) sessionLog.appendEventLog(eventLogDir, { type: "connection:timeout", ref: opts.alias || opts.profileId || opts.host, username: opts.username, host: opts.host, port: opts.port || 22 });
       reject(new Error(`SSH connection timeout after ${timeout / 1000}s to ${opts.host}:${opts.port}`));
     }, timeout + 2000);
 
@@ -214,7 +214,7 @@ export function connect(opts) {
         state: ConnState.CONNECTED,
         lastUsedAt: Date.now(),
       });
-      if (eventLogDir) sessionLog.appendEventLog(eventLogDir, "connection", `${sessionLog.eventTs()} connect ok | ${opts.alias || opts.profileId || opts.host} | ${opts.username || "?"}@${opts.host}:${opts.port || 22} | ${instanceId}`);
+      if (eventLogDir) sessionLog.appendEventLog(eventLogDir, { type: "connection:ok", ref: opts.alias || opts.profileId || opts.host, username: opts.username, host: opts.host, port: opts.port || 22, connInstance: instanceId });
       notifyConnectionChange();
       resolve(connId);
     });
@@ -222,7 +222,7 @@ export function connect(opts) {
     client.on("error", (err) => {
       clearTimeout(timer);
       notifyConnectionChange(); // a replaced old connection may have been dropped
-      if (eventLogDir) sessionLog.appendEventLog(eventLogDir, "connection", `${sessionLog.eventTs()} connect fail | ${opts.alias || opts.profileId || opts.host} | ${err?.message || err}`);
+      if (eventLogDir) sessionLog.appendEventLog(eventLogDir, { type: "connection:fail", ref: opts.alias || opts.profileId || opts.host, error: String(err?.message || err) });
       reject(err);
     });
 
@@ -232,7 +232,7 @@ export function connect(opts) {
       if (entry && entry.client === client) {
         entry.state = ConnState.CLOSED;
         connections.delete(connId);
-        if (eventLogDir) sessionLog.appendEventLog(eventLogDir, "connection", `${sessionLog.eventTs()} close | ${connLabel(entry.config)} | ${entry.instanceId} | socket closed by remote`);
+        if (eventLogDir) sessionLog.appendEventLog(eventLogDir, { type: "connection:close", ref: connLabel(entry.config), connInstance: entry.instanceId, note: "socket closed by remote" });
         notifyConnectionChange();
       }
     });
@@ -791,7 +791,7 @@ export function disconnect(connId, { manual = true } = {}) {
       }
     }
     connections.delete(key);
-    if (eventLogDir) sessionLog.appendEventLog(eventLogDir, "connection", `${sessionLog.eventTs()} disconnect ${manual ? "manual" : "auto"} | ${connLabel(entry.config)} | ${entry.instanceId}`);
+    if (eventLogDir) sessionLog.appendEventLog(eventLogDir, { type: "connection:disconnect", mode: manual ? "manual" : "auto", ref: connLabel(entry.config), connInstance: entry.instanceId });
     try {
       // destroy() (not end()): end() is a graceful close that waits for
       // in-flight channels to finish, so a long exec would keep running
@@ -902,6 +902,23 @@ export function setSessionLogMaxBytes(bytes) {
   sessionLogMaxBytes = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
 }
 
+// 惰性日切归档的每日节流：归档检查（扫描+打包）每天最多一次，高频调用点只付日期比较成本
+let lastRollCheckDay = null;
+
+/** 惰性日切归档（统一入口）：滑出保留窗口的日期目录就地打包 tar.gz（冷处理，低频）。
+ *  由 exec / tty 创建 / 面板配置变更等任意触发点调用；内部收集活跃会话引用保护。
+ *  节流：默认每日最多执行一次完整检查（force 绕过，用于配置变更后立即收敛）；
+ *  无定时器，跨天后首次活动即触发当日检查。 */
+export function rollSessionLogs(force = false) {
+  if (!sessionLogDir) return;
+  const today = sessionLog.dayStamp();
+  if (!force && lastRollCheckDay === today) return;
+  lastRollCheckDay = today;
+  const activePaths = new Set();
+  for (const s of sessions.values()) if (s.logger?.filePath) activePaths.add(s.logger.filePath);
+  sessionLog.cleanupSessionLogs(sessionLogDir, { maxBytes: sessionLogMaxTotalBytes, activePaths });
+}
+
 export function setSessionLogMaxTotalBytes(bytes) {
   sessionLogMaxTotalBytes = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
 }
@@ -1010,7 +1027,7 @@ export function createSession(connId, command, opts = {}) {
           })
         : null;
       sess.logger = logger;
-      if (logger) sessionLog.cleanupSessionLogs(sessionLogDir, { maxBytes: sessionLogMaxTotalBytes });
+      if (logger) rollSessionLogs();
 
       stream.on("data", (d) => {
         sess.lastActivityAt = Date.now();

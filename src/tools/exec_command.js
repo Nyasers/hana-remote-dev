@@ -516,6 +516,12 @@ export async function execute(input, ctx) {
     });
       // 一次性命令记录：执行已发生（execResult 非空）才落盘；连接失败等未执行场景不记。
       writeCommandLog(rd, input, connId, execResult, { status, reason, started });
+      // 惰性日切归档（高频路径触发）：昨天及更早目录就地打包；无定时器，跨天后首次活动即归档
+      try {
+        rd.sshClient.rollSessionLogs?.();
+      } catch {
+        /* best effort */
+      }
     }
   }
 }

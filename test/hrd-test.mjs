@@ -92,6 +92,7 @@ section("parseHrdUri（HRD 资源协议路由）");
   check("connection 单例", parseHrdUri("HRD://connection/my-server")?.kind === "connection" && parseHrdUri("HRD://connection/my-server")?.alias === "my-server");
   check("alias 保留大小写", parseHrdUri("HRD://connection/MyServer")?.alias === "MyServer");
   check("session id 保留大小写", parseHrdUri("HRD://session/AbC123")?.id === "AbC123");
+  check("session-read 路由", parseHrdUri("HRD://session-read/AbC123")?.kind === "session-read" && parseHrdUri("HRD://session-read/AbC123")?.id === "AbC123");
   check("POST connect", parseHrdUri("HRD://connection/my-server", "POST", { action: "connect" })?.kind === "connection-action");
   check("PUT 编辑", parseHrdUri("HRD://connection/my-server", "PUT")?.kind === "connection-edit");
   check("DELETE 移除", parseHrdUri("HRD://connection/my-server", "DELETE")?.kind === "connection-delete");
@@ -206,39 +207,68 @@ section("ANSI 清理");
 }
 
 // ---------- cleanupSessionLogs ----------
-section("cleanupSessionLogs（归档与限额）");
+section("cleanupSessionLogs（昨日归档 + 空间兜底 + 活跃保护）");
 {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean-"));
-  const mk = (group, files) => {
+  const day = (n) => {
+    const d = new Date(Date.now() - n * 86400000);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const mk = (root, group, files) => {
     const g = path.join(root, "session", group);
     for (const f of files) {
       fs.mkdirSync(path.dirname(path.join(g, f)), { recursive: true });
       fs.writeFileSync(path.join(g, f), "x".repeat(500), "utf8");
     }
   };
-  mk("2026-08-09", ["a.md", "b.md"]);
-  mk("2026-08-10", ["c.md"]);
-  mk("2026-08-11", ["d.md"]);
+  // 昨日归档：昨天及更早归档删除；今天保留
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean-"));
+  mk(root, day(2), ["a.md", "b.md"]);
+  mk(root, day(1), ["c.md"]);
+  mk(root, day(0), ["d.md"]);
   sessionLog.cleanupSessionLogs(path.join(root, "session"), { maxBytes: 0 });
-  check("0=不设限：无截断标注", fs.existsSync(path.join(root, "session", "2026-08-09", "a.md")));
-
+  check("昨日及更早归档删除", !fs.existsSync(path.join(root, "session", day(2))) && !fs.existsSync(path.join(root, "session", day(1))));
+  check("今天保留", fs.existsSync(path.join(root, "session", day(0), "d.md")));
+  check("归档就地生成 tar.gz", fs.readdirSync(path.join(root, "session")).some((f) => f.endsWith(".tar.gz")));
+  // tar 读取侧：不解压列表 + 按需提取（直接定位昨日归档包）
+  const gzPath = path.join(root, "session", `${day(1)}.tar.gz`);
+  const entries = sessionLog.listTarGz(gzPath);
+  check("列表含归档条目", entries.some((e) => e.name === `${day(1)}/c.md`));
+  const hit = sessionLog.extractTarGz(gzPath, `${day(1)}/c.md`);
+  check("按需提取内容一致", hit && hit.toString("utf8") === "x".repeat(500));
+  check("提取不存在条目返回 null", sessionLog.extractTarGz(gzPath, `${day(1)}/nope.md`) === null);
+  // 活跃引用保护：命中的组延迟归档，引用释放后归档
   const root2 = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean2-"));
-  const mk2 = (group, bytes) => {
-    const g = path.join(root2, "session", group);
+  mk(root2, day(1), ["a.md"]);
+  const activePath = path.join(root2, "session", day(1), "a.md");
+  sessionLog.cleanupSessionLogs(path.join(root2, "session"), { maxBytes: 0, activePaths: new Set([activePath]) });
+  check("活跃引用的目录不归档", fs.existsSync(activePath));
+  sessionLog.cleanupSessionLogs(path.join(root2, "session"), { maxBytes: 0, activePaths: new Set() });
+  check("引用释放后归档", !fs.existsSync(activePath));
+  // 空间兜底：窗口内超限 → 归档最旧
+  const root3 = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean3-"));
+  const mk3 = (group, bytes) => {
+    const g = path.join(root3, "session", group);
     fs.mkdirSync(g, { recursive: true });
     fs.writeFileSync(path.join(g, "x.md"), "x".repeat(bytes), "utf8");
   };
-  mk2("2026-08-08", 2000);
-  mk2("2026-08-09", 2000);
-  mk2("2026-08-10", 2000);
-  sessionLog.cleanupSessionLogs(path.join(root2, "session"), { maxBytes: 4000 });
-  check("默认超限整组归档删最旧", !fs.existsSync(path.join(root2, "session", "2026-08-08")) && fs.existsSync(path.join(root2, "session", "2026-08-10", "x.md")));
-  check("归档生成（tar.gz）", (() => {
-    const arch = path.join(root2, "archive");
-    return fs.existsSync(arch) && fs.readdirSync(arch).some((f) => f.endsWith(".tar.gz"));
-  })());
+  mk3(day(1), 2000);
+  mk3(day(0), 2000);
+  sessionLog.cleanupSessionLogs(path.join(root3, "session"), { maxBytes: 3000, retentionDays: 0 });
+  check("空间兜底归档最旧", !fs.existsSync(path.join(root3, "session", day(1))) && fs.existsSync(path.join(root3, "session", day(0), "x.md")));
+  // 归档有界：tar.gz 超配额 → 删最旧
+  const root4 = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean4-"));
+  const gzDir = path.join(root4, "session");
+  fs.mkdirSync(gzDir, { recursive: true });
+  fs.writeFileSync(path.join(gzDir, "old.tar.gz"), "x".repeat(3000), "utf8");
+  fs.writeFileSync(path.join(gzDir, "new.tar.gz"), "x".repeat(3000), "utf8");
+  const oldT = new Date(Date.now() - 5 * 86400000);
+  fs.utimesSync(path.join(gzDir, "old.tar.gz"), oldT, oldT);
+  sessionLog.cleanupSessionLogs(gzDir, { maxBytes: 4000 });
+  check("归档超配额删最旧", !fs.existsSync(path.join(gzDir, "old.tar.gz")) && fs.existsSync(path.join(gzDir, "new.tar.gz")));
   fs.rmSync(root, { recursive: true, force: true });
   fs.rmSync(root2, { recursive: true, force: true });
+  fs.rmSync(root3, { recursive: true, force: true });
+  fs.rmSync(root4, { recursive: true, force: true });
 }
 
 // ---------- plugin-config ----------
@@ -269,27 +299,30 @@ section("describeProfileDiff（配置变更明细）");
 }
 
 // ---------- appendEventLog ----------
-section("appendEventLog（事件日志按日 + 上限）");
+section("appendEventLog（统一事件流 jsonl + 上限）");
 {
   const dirEvt = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-log-evt-"));
-  sessionLog.appendEventLog(dirEvt, "connection", `${sessionLog.eventTs()} connect ok | demo | hanako@host:22 | c1`);
-  sessionLog.appendEventLog(dirEvt, "connection", `${sessionLog.eventTs()} disconnect manual | demo | c1`);
-  const connFiles = fs.readdirSync(path.join(dirEvt, "connection"));
-  check("conn 按日单文件", connFiles.length === 1 && /^\d{4}-\d{2}-\d{2}\.md$/.test(connFiles[0]));
-  const evt1 = fs.readFileSync(path.join(dirEvt, "connection", connFiles[0]), "utf8");
-  check("事件日志追加两行", evt1.split("\n").filter((l) => l.trim().length > 0).length === 2 && evt1.includes("connect ok | demo") && evt1.includes("disconnect manual | demo"));
-  check("eventTs 格式", /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(sessionLog.eventTs()));
+  sessionLog.appendEventLog(dirEvt, { type: "connection:ok", ref: "demo", username: "hanako", host: "host", port: 22, connInstance: "c1" });
+  sessionLog.appendEventLog(dirEvt, { type: "connection:disconnect", mode: "manual", ref: "demo", connInstance: "c1" });
+  const evFiles = fs.readdirSync(path.join(dirEvt, "events"));
+  check("事件流按日单文件", evFiles.length === 1 && /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(evFiles[0]));
+  const evt1 = fs.readFileSync(path.join(dirEvt, "events", evFiles[0]), "utf8");
+  const lines1 = evt1.trim().split("\n");
+  check("事件流追加两行合法 JSON", lines1.length === 2 && lines1.every((l) => JSON.parse(l).v === 1));
+  const o1 = JSON.parse(lines1[0]);
+  check("事件带 ts/type/字段", o1.ts && o1.type === "connection:ok" && o1.ref === "demo" && o1.connInstance === "c1");
+  check("tsNow 本地 ISO 带时区毫秒", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/.test(sessionLog.tsNow()));
   // 超过 2MB 后：标注一次，后续行不再写入
-  fs.appendFileSync(path.join(dirEvt, "connection", connFiles[0]), "x".repeat(2 * 1024 * 1024), "utf8");
-  sessionLog.appendEventLog(dirEvt, "connection", "line-after-cap");
-  sessionLog.appendEventLog(dirEvt, "connection", "line-after-cap-2");
-  const evt2 = fs.readFileSync(path.join(dirEvt, "connection", connFiles[0]), "utf8");
-  const anno = (evt2.match(/事件日志已达 2MB 上限/g) || []).length;
+  fs.appendFileSync(path.join(dirEvt, "events", evFiles[0]), "x".repeat(2 * 1024 * 1024), "utf8");
+  sessionLog.appendEventLog(dirEvt, { type: "op", opId: "h_after_cap" });
+  sessionLog.appendEventLog(dirEvt, { type: "op", opId: "h_after_cap_2" });
+  const evt2 = fs.readFileSync(path.join(dirEvt, "events", evFiles[0]), "utf8");
+  const anno = (evt2.match(/log:truncated/g) || []).length;
   check("2MB 上限标注一次", anno === 1);
-  check("超限后不再写入", !evt2.includes("line-after-cap") && !evt2.includes("line-after-cap-2"));
-  // 不同基名独立上限（config 不共享 annotated 集）
-  sessionLog.appendEventLog(dirEvt, "config", `${sessionLog.eventTs()} connection:add | demo | hanako@host:22`);
-  check("config 基名独立文件", fs.existsSync(path.join(dirEvt, "config", `${sessionLog.dayStamp()}.md`)));
+  check("超限后不再写入", !evt2.includes("h_after_cap") && !evt2.includes("h_after_cap_2"));
+  // 连接/配置/操作同流单文件（type 分流）
+  sessionLog.appendEventLog(dirEvt, { type: "config:set", maxMB: 8 });
+  check("同流单文件 type 分流", fs.readdirSync(path.join(dirEvt, "events")).length === 1);
   fs.rmSync(dirEvt, { recursive: true, force: true });
 }
 

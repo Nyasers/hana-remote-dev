@@ -106,7 +106,7 @@ export async function execute(input, ctx) {
     proxyCommand: input.proxyCommand,
     credentials: hasSecretChange,
   });
-  rd.sessionLog.appendEventLog(rd.logsDir, "config", `${rd.sessionLog.eventTs()} connection:update | ${final.name}${input.alias && input.alias !== target.name ? ` (renamed from ${target.name})` : ""}${diffs.length ? ` | ${diffs.join("; ")}` : ""}`);
+  rd.sessionLog.appendEventLog(rd.logsDir, { type: "connection:update", name: final.name, ...(input.alias && input.alias !== target.name ? { renamedFrom: target.name } : {}), diffs });
   return {
     content: [{ type: "text", text: `Profile updated: ${final.name} (${final.username}@${final.host}:${final.port})` }],
     details: { id: final.id, alias: final.name },

@@ -332,9 +332,9 @@ export async function install(ctx) {
 
   // 会话日志目录：tty 会话与一次性命令随运行落盘（agent 可经 HRD://sessions/ 读取）
   setSessionLogDir(path.join(logsDir, "session"));
-  // 事件日志目录：connection/（连接变动）/ config/（配置变动）
+  // 事件日志目录：统一事件流 events/（连接/配置/操作，type 字段分流）
   setEventLogDir(logsDir);
-  // 操作日志目录：operations/（每次工具调用一行，含状态/耗时/退出码）
+  // 操作日志目录：并入统一事件流（events/<date>.jsonl，type="op"）
   setOperationLogDir(logsDir);
 
   // 统一配置（dataDir/config.json，面板唯一入口）：会话日志两限 + 空闲兜底 TTL
@@ -344,6 +344,12 @@ export async function install(ctx) {
   setSessionLogMaxTotalBytes(pcfg.sessionLog.maxTotalMB > 0 ? pcfg.sessionLog.maxTotalMB * 1024 * 1024 : 0);
   setIdleTimeout(pcfg.idleTimeout);
   startIdleManager();
+  // 初始化补归档：插件重启/首启时检查滑出窗口的日期目录（离线多日后的补处理），每日节流仍生效
+  try {
+    sshClient.rollSessionLogs(true);
+  } catch {
+    /* best effort */
+  }
 
   // Local Socket.IO server: the panel's duplex channel. A failure here must
   // not take the plugin down either — tools keep working, the page shows

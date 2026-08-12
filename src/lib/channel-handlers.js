@@ -9,9 +9,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { listConnections, isConnected, connect, disconnect, listSessions, killSession, getSessionLogLimits, setSessionLogMaxBytes, setSessionLogMaxTotalBytes, setIdleTimeout } from "./ssh-client.js";
+import { listConnections, isConnected, connect, disconnect, listSessions, killSession, getSessionLogLimits, setSessionLogMaxBytes, setSessionLogMaxTotalBytes, setIdleTimeout, rollSessionLogs } from "./ssh-client.js";
 import { listOperations, killOperation, listHistory } from "./operations.js";
-import { loadSessionLogConfig, cleanupSessionLogs, appendEventLog, eventTs, describeProfileDiff } from "./session-log.js";
+import { loadSessionLogConfig, appendEventLog, eventTs, describeProfileDiff } from "./session-log.js";
 import { loadPluginConfig, savePluginConfig } from "./plugin-config.js";
 
 // ---- 会话日志三限（面板配置） ----
@@ -57,15 +57,13 @@ export function handleSessionLogSet(runtime, payload) {
     setSessionLogMaxBytes(sl.maxMB > 0 ? sl.maxMB * 1024 * 1024 : 0);
     setSessionLogMaxTotalBytes(sl.maxTotalMB > 0 ? sl.maxTotalMB * 1024 * 1024 : 0);
     setIdleTimeout(clean.idleTimeout);
-    cleanupSessionLogs(path.join(runtime.logsDir, "session"), {
-      maxBytes: sl.maxTotalMB > 0 ? sl.maxTotalMB * 1024 * 1024 : 0,
-    });
-    appendEventLog(runtime.logsDir, "config", `${eventTs()} config:set | maxMB=${sl.maxMB} maxTotalMB=${sl.maxTotalMB} idleTimeout=${clean.idleTimeout} | panel`);
+    rollSessionLogs(true); // 配置变更后强制检查（限额变化需立即收敛，绕过每日节流）
+    appendEventLog(runtime.logsDir, { type: "config:set", maxMB: sl.maxMB, maxTotalMB: sl.maxTotalMB, idleTimeout: clean.idleTimeout, source: "panel" });
     return { ok: true, data: { limits: getSessionLogLimits(), idleTimeout: clean.idleTimeout } };
   } catch (err) {
     // 失败路径也留审计痕迹（配置未生效但至少可追溯）
     try {
-      appendEventLog(runtime.logsDir, "config", `${eventTs()} config:set fail | ${String(err?.message ?? err).slice(0, 120)} | panel`);
+      appendEventLog(runtime.logsDir, { type: "config:set", ok: false, error: String(err?.message ?? err).slice(0, 120), source: "panel" });
     } catch {
       /* 审计本身失败则静默 */
     }
@@ -188,7 +186,7 @@ export async function handleSave(runtime, body) {
   // are never echoed back in any response.
   applyCredentialFields(store, saved.name, body);
 
-  appendEventLog(runtime.logsDir, "config", `${eventTs()} connection:add | ${saved.name} | ${saved.username}@${saved.host}:${saved.port}`);
+  appendEventLog(runtime.logsDir, { type: "connection:add", name: saved.name, username: saved.username, host: saved.host, port: saved.port });
   return { ok: true, data: { profile: saved } };
 }
 
@@ -235,7 +233,7 @@ export async function handleUpdate(runtime, ref, body) {
     proxyCommand: body.proxyCommand,
     credentials: !!(body.password || body.privateKey || body.passphrase),
   });
-  appendEventLog(runtime.logsDir, "config", `${eventTs()} connection:update | ${updated.name}${ref !== updated.name ? ` (renamed from ${ref})` : ""}${diffs.length ? ` | ${diffs.join("; ")}` : ""}`);
+  appendEventLog(runtime.logsDir, { type: "connection:update", name: updated.name, ...(ref !== updated.name ? { renamedFrom: ref } : {}), diffs });
   return { ok: true, data: { profile: updated } };
 }
 
@@ -260,7 +258,7 @@ export function handleRemove(runtime, ref) {
   if (!store.remove(target.name)) {
     return { ok: false, error: `Failed to remove profile "${target.name}".`, status: 500 };
   }
-  appendEventLog(runtime.logsDir, "config", `${eventTs()} connection:remove | ${target.name} | ${target.username}@${target.host}:${target.port ?? 22}`);
+  appendEventLog(runtime.logsDir, { type: "connection:remove", name: target.name, username: target.username, host: target.host, port: target.port ?? 22 });
   return { ok: true, data: { removed: target.name } };
 }
 

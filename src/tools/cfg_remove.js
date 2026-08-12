@@ -43,7 +43,7 @@ export async function execute(input, ctx) {
     return { content: [{ type: "text", text: `Failed to remove profile "${target.name}".` }] };
   }
 
-  rd.sessionLog.appendEventLog(rd.logsDir, "config", `${rd.sessionLog.eventTs()} connection:remove | ${target.name} | ${target.username}@${target.host}:${target.port ?? 22}`);
+  rd.sessionLog.appendEventLog(rd.logsDir, { type: "connection:remove", name: target.name, username: target.username, host: target.host, port: target.port ?? 22 });
 
   return {
     content: [{ type: "text", text: `Profile removed: ${target.name} (credentials entry cleaned up).` }],

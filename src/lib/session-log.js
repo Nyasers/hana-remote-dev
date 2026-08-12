@@ -88,24 +88,36 @@ export function timeStamp(d = new Date()) {
   return `${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
 }
 
-/** 追加一行事件日志（<dir>/<base>/<YYYY-MM-DD>.md）；失败静默（best effort）。 */
-export function appendEventLog(dir, base, line) {
+/** 本地 ISO 时间戳（含时区偏移与毫秒）：事件行 ts 字段，机器可解析、本地可读。 */
+export function tsNow(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  const a = Math.abs(off);
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, "0")}${sign}${p(Math.floor(a / 60))}:${p(a % 60)}`;
+}
+
+/** 追加一个结构化事件（<dir>/events/<YYYY-MM-DD>.jsonl 一行）；失败静默（best effort）。
+ *  事件行自动补 v=1（schema 版本）与 ts（本地 ISO）；type 为事件类型（op / connection:add / config:set ...）。
+ * @param {string} dir - logs 根目录
+ * @param {object} ev - 事件对象 { type, ...fields } */
+export function appendEventLog(dir, ev) {
   try {
-    const sub = path.join(dir, base);
+    const sub = path.join(dir, "events");
     fs.mkdirSync(sub, { recursive: true });
-    const p = path.join(sub, `${dayStamp()}.md`);
+    const p = path.join(sub, `${dayStamp()}.jsonl`);
     try {
       if (fs.existsSync(p) && fs.statSync(p).size > EVENT_LOG_MAX_BYTES) {
         if (!eventLogAnnotated.has(p)) {
           eventLogAnnotated.add(p);
-          fs.appendFileSync(p, `\n> ${eventTs()} 事件日志已达 2MB 上限，后续事件不再记录\n`, "utf8");
+          fs.appendFileSync(p, `${JSON.stringify({ v: 1, ts: tsNow(), type: "log:truncated", note: "事件日志已达 2MB 上限，后续事件不再记录" })}\n`, "utf8");
         }
         return;
       }
     } catch {
       /* stat 失败按可写处理 */
     }
-    fs.appendFileSync(p, `${line}\n`, "utf8");
+    fs.appendFileSync(p, `${JSON.stringify({ v: 1, ts: tsNow(), ...ev })}\n`, "utf8");
   } catch {
     /* best effort */
   }
@@ -146,27 +158,99 @@ function tarGz(entries) {
   return zlib.gzipSync(Buffer.concat(chunks));
 }
 
-/** 归档一组会话记录到 <logs>/archive/<组名>.tar.gz（组名=日期目录名或 flat-<文件名>）。 */
-function archiveGroup(archiveDir, g) {
-  fs.mkdirSync(archiveDir, { recursive: true });
+/** 归档一组会话记录为 tar.gz（就地：落在 session 目录内，与活跃日期目录同名不同后缀）。 */
+function archiveGroup(dir, g) {
   const entries = g.files.map((f) => ({
     name: g.dirPath ? `${g.name}/${path.basename(f)}` : path.basename(f),
     path: f,
     mtime: fs.statSync(f).mtimeMs,
   }));
   const gz = tarGz(entries);
-  const out = path.join(archiveDir, `${g.name}.tar.gz`);
+  const out = path.join(dir, `${g.name}.tar.gz`);
   // 同名存档不应出现（同一日期目录归档一次即删除）；若出现则不覆盖（保留已有，直接丢弃本次）
   if (!fs.existsSync(out)) fs.writeFileSync(out, gz);
 }
 
-/** 清理会话日志：总字节超限时，把最旧的日期目录整体打包归档到 <logs>/archive/ 后删除。
- * @param {string} dir - session 日志目录
- * @param {object} [opts] - { maxBytes }；缺省用默认常量；0 = 不设限 */
-export function cleanupSessionLogs(dir, { maxBytes = SESSION_LOG_BYTES } = {}) {
+/** 不解压列出 tar.gz 内条目（零依赖：gunzip 后顺序扫 tar 头）。
+ * @param {Buffer|string} gzBuf - tar.gz 缓冲区或文件路径
+ * @returns {Array<{name:string,size:number}>} */
+export function listTarGz(gzBuf) {
+  let data;
   try {
-    const archiveDir = path.join(path.dirname(dir), "archive");
-    // 按组（日期目录 / 平铺存量文件）聚合，按最早 mtime 排序
+    data = zlib.gunzipSync(typeof gzBuf === "string" ? fs.readFileSync(gzBuf) : gzBuf);
+  } catch {
+    return [];
+  }
+  const out = [];
+  let off = 0;
+  const len = data.length;
+  while (off + 512 <= len) {
+    const name = data.toString("utf8", off, off + 100).replace(/\0.*$/, "");
+    const sizeStr = data.toString("utf8", off + 124, off + 136).replace(/[^\d].*$/, "");
+    const size = parseInt(sizeStr, 8) || 0;
+    if (!name && size === 0) break; // 结束块
+    out.push({ name, size });
+    off += 512 + Math.ceil(size / 512) * 512;
+  }
+  return out;
+}
+
+/** 按名从 tar.gz 提取单个条目（不解压全包，仅读目标条目）。
+ * @param {Buffer|string} gzBuf - tar.gz 缓冲区或文件路径
+ * @param {string} name - 包内条目名（如 `2026-08-11/abc.md`）
+ * @returns {Buffer|null} */
+export function extractTarGz(gzBuf, name) {
+  let data;
+  try {
+    data = zlib.gunzipSync(typeof gzBuf === "string" ? fs.readFileSync(gzBuf) : gzBuf);
+  } catch {
+    return null;
+  }
+  let off = 0;
+  const len = data.length;
+  while (off + 512 <= len) {
+    const entryName = data.toString("utf8", off, off + 100).replace(/\0.*$/, "");
+    const sizeStr = data.toString("utf8", off + 124, off + 136).replace(/[^\d].*$/, "");
+    const size = parseInt(sizeStr, 8) || 0;
+    if (!entryName && size === 0) break; // 结束块
+    if (entryName === name) {
+      return Buffer.from(data.subarray(off + 512, off + 512 + size));
+    }
+    off += 512 + Math.ceil(size / 512) * 512;
+  }
+  return null;
+}
+
+/** 会话日志保留窗口（天）：昨日归档，昨天及更早的日期目录就地打包（时间维度主策略）；今天保持活跃写入。 */
+const SESSION_RETENTION_DAYS = 1;
+
+/** 清理会话日志：
+ *  时间主策略：日期目录早于保留窗口（默认 1 天，昨日归档）且无活跃引用 → 就地打包 session/<date>.tar.gz 后删除原目录；
+ *  空间兜底：窗口内日志总字节仍超 maxBytes → 继续归档最旧（0 = 空间不设限）；
+ *  归档有界：tar.gz 累积超 maxBytes → 删除最旧归档。
+ * @param {string} dir - session 日志目录
+ * @param {object} [opts] - { maxBytes, retentionDays, activePaths }
+ *   maxBytes 缺省默认常量；0 = 空间不设限
+ *   retentionDays 缺省 1（昨日归档）；0 = 不做时间归档
+ *   activePaths 活跃会话日志文件路径集合（Set<string>）；命中的组跳过归档（延迟到会话结束后） */
+export function cleanupSessionLogs(dir, { maxBytes = SESSION_LOG_BYTES, retentionDays = SESSION_RETENTION_DAYS, activePaths = null } = {}) {
+  try {
+    // 1) 归档有界：tar.gz 累积超配额 → 删最旧
+    const gzFiles = fs.readdirSync(dir)
+      .filter((f) => f.endsWith(".tar.gz"))
+      .map((f) => path.join(dir, f))
+      .sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
+    let gzTotal = gzFiles.reduce((s, f) => s + fs.statSync(f).size, 0);
+    while (maxBytes > 0 && gzFiles.length > 0 && gzTotal > maxBytes) {
+      const f = gzFiles.shift();
+      try {
+        gzTotal -= fs.statSync(f).size;
+        fs.unlinkSync(f);
+      } catch {
+        /* 删除失败保留 */
+      }
+    }
+    // 2) 聚合分组（日期目录 / 平铺存量文件），按最早 mtime 排序
     const groups = [];
     for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, d.name);
@@ -189,12 +273,23 @@ export function cleanupSessionLogs(dir, { maxBytes = SESSION_LOG_BYTES } = {}) {
       }
     }
     groups.sort((a, b) => a.earliest - b.earliest);
+    // 组日期：日期目录名（YYYY-MM-DD → 当日 00:00 本地）；平铺组用最早 mtime
+    const groupDate = (g) => {
+      if (g.dirPath && /^\d{4}-\d{2}-\d{2}$/.test(g.name)) return new Date(`${g.name}T00:00:00`).getTime();
+      return g.earliest;
+    };
+    const cutoff = retentionDays > 0 ? Date.now() - retentionDays * 86400000 : 0;
     let total = groups.reduce((s, g) => s + g.total, 0);
-    while (maxBytes > 0 && total > maxBytes) {
-      const g = groups.shift();
-      if (!g) break;
+    const hasActive = (g) => activePaths && g.files.some((f) => activePaths.has(f));
+    while (groups.length > 0) {
+      const g = groups[0];
+      const old = cutoff > 0 && groupDate(g) < cutoff;
+      const over = maxBytes > 0 && total > maxBytes;
+      if (!old && !over) break;
+      groups.shift();
+      if (hasActive(g)) continue; // 活跃会话引用：延迟归档，下次触发再试
       try {
-        archiveGroup(archiveDir, g);
+        archiveGroup(dir, g);
         for (const f of g.files) fs.unlinkSync(f);
         if (g.dirPath) {
           try {

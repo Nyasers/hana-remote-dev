@@ -168,7 +168,7 @@ export async function execute(input, ctx) {
 
       const handle = rd.sshClient.anchorConnection(connId, saved.id, saved.name);
 
-      rd.sessionLog.appendEventLog(rd.logsDir, "config", `${rd.sessionLog.eventTs()} connection:add | ${saved.name} | ${connectOpts.username}@${connectOpts.host}:${connectOpts.port}`);
+      rd.sessionLog.appendEventLog(rd.logsDir, { type: "connection:add", name: saved.name, username: connectOpts.username, host: connectOpts.host, port: connectOpts.port });
 
       return {
         content: [{ type: "text", text: `已连接 ${saved.name}（${connectOpts.username}@${connectOpts.host}:${connectOpts.port}）` }],
