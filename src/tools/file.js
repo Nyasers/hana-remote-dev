@@ -4,7 +4,7 @@ import { runtimeHolder } from "../lib/runtime.js";
 import { attachCard } from "../lib/card-utils.js";
 import { resolveAgentName } from "../lib/agent-name.js";
 export const name = "file";
-export const description = "Remote file metadata (stat) and universal copy: local↔remote, remote↔remote (same connection via cp, cross-connection via streaming relay). Local↔local copies also work (intentional redundancy, SCP semantics: bare paths are local).";
+export const description = "Remote file metadata (stat) and universal copy: local↔remote, remote↔remote (same connection via cp, cross-connection via streaming relay). Local↔local copies also work (intentional redundancy, SCP semantics: bare paths are local). 覆盖性操作（同名目标）会直接覆盖，需先向用户确认；路径/凭据不得写入命令参数。";
 
 export const parameters = {
   type: "object",

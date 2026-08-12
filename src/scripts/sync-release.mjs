@@ -36,8 +36,8 @@ for (const rel of JS_ESM_ITEMS) {
   console.log(`terser: ${rel} (${code.length}B -> ${out.code.length}B)`);
 }
 
-// 非 JS 静态项：原样拷贝
-const RAW_ITEMS = ["manifest.json", "skills", "app"];
+// 非 JS 静态项：原样拷贝（skills 已随 SKILL 退役移除——Agent 手册经 HRD://guide 按需取）
+const RAW_ITEMS = ["manifest.json", "app"];
 for (const item of RAW_ITEMS) {
   fs.cpSync(path.join(root, item), path.join(dist, item), { recursive: true });
   console.log(`sync: ${item}`);

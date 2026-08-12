@@ -32,6 +32,7 @@ import * as cfgDisconnect from "./cfg_disconnect.js";
 import * as cfgEdit from "./cfg_edit.js";
 import * as cfgRemove from "./cfg_remove.js";
 import { handleSave } from "../lib/channel-handlers.js";
+import { guideMarkdown } from "../lib/guide.js";
 
 // cfg_* 已并入 hrd 协议端点（不再单独注册），源码保留为内部实现供路由复用。
 const CFG_TOOLS = {
@@ -48,7 +49,7 @@ function tool(name) {
 
 export const name = "hrd";
 export const description =
-  "HRD 资源协议端点：按 URI 定位连接/会话资源。GET HRD://status（总览）/ HRD://connections（配置列表）/ HRD://connection/<alias>（状态）/ HRD://session/<id>（会话记录位置+摘要）/ HRD://sessions（会话列表）；POST HRD://connection/<alias> body={action:connect|disconnect|save}；PUT/DELETE 同 URI 编辑/移除配置。method 必须显式传（GET/POST/PUT/DELETE），不做推断。会话记录内容由 Agent 拿到位置后自行用 read/grep 查询。";
+  "HRD 资源协议端点：按 URI 定位连接/会话资源。GET HRD://status（总览）/ HRD://connections（配置列表）/ HRD://connection/<alias>（状态）/ HRD://session/<id>（会话记录位置+摘要）/ HRD://sessions（会话列表）/ HRD://guide（使用手册索引）/ HRD://guide/<章节>（章节详情，如 security/connection/protocol/exec/query）；POST HRD://connection/<alias> body={action:connect|disconnect|save}；PUT/DELETE 同 URI 编辑/移除配置。method 必须显式传（GET/POST/PUT/DELETE），不做推断。会话记录内容由 Agent 拿到位置后自行用 read/grep 查询。命令中不得内联凭据（curl -u、export TOKEN），删除连接配置必须先向用户确认。";
 
 export const parameters = {
   type: "object",
@@ -76,9 +77,9 @@ const URI_RE = /^HRD:\/\/([a-z]+(?:\/[a-zA-Z0-9._-]+)*)$/i;
 
 /**
  * 解析 HRD URI。
- * @returns {object|null} { kind, alias?, id? } — kind ∈
+ * @returns {object|null} { kind, alias?, id?, section? } — kind ∈
  *   status | connections | connection | connection-action | connection-edit |
- *   connection-delete | session | sessions
+ *   connection-delete | session | sessions | guide
  */
 export function parseHrdUri(uri, method, body) {
   const m = URI_RE.exec(String(uri || "").trim());
@@ -90,7 +91,11 @@ export function parseHrdUri(uri, method, body) {
     if (segs[0] === "status") return { kind: "status" };
     if (segs[0] === "connections") return { kind: "connections" };
     if (segs[0] === "sessions") return { kind: "sessions" };
+    if (segs[0] === "guide") return { kind: "guide", section: null }; // 手册根 → 索引
     return null;
+  }
+  if (segs[0] === "guide" && segs.length === 2) {
+    return { kind: "guide", section: segs[1] }; // 章节名大小写不敏感（匹配时 upper）
   }
   if (segs[0] === "connection" && segs.length === 2) {
     const alias = segs[1]; // 配置别名大小写敏感，保留原样
@@ -165,9 +170,61 @@ export async function execute(input, ctx) {
       return sessionLocate(rd, ctx, route.id);
     case "sessions":
       return sessionsList(rd, ctx);
+    case "guide":
+      return guideRoute(route.section);
     default:
       return { content: [{ type: "text", text: `Unhandled route: ${route.kind}` }] };
   }
+}
+
+// ---- guide 手册（单一事实源：src/assets/guide.md 内联进 bundle） ----
+
+/** 解析 guide.md：## 章节名 + 每节首非空行摘要 + 正文。 */
+export function parseGuideSections(text) {
+  const sections = [];
+  const lines = String(text).split("\n");
+  let cur = null;
+  for (const line of lines) {
+    const m = /^##\s+([A-Za-z0-9_-]+)/.exec(line);
+    if (m) {
+      cur = { name: m[1].toUpperCase(), summary: "", body: [] };
+      sections.push(cur);
+    } else if (cur) {
+      if (!cur.summary && line.trim()) cur.summary = line.trim().replace(/\s+/g, " ").slice(0, 72);
+      cur.body.push(line);
+    }
+  }
+  return sections;
+}
+
+/** help 风格索引：章节名对齐列 + 首行摘要（程序化生成，永远与正文同步）。 */
+export function guideIndex() {
+  const sections = parseGuideSections(guideMarkdown);
+  const lines = ["有关某个章节的详细信息，请键入 HRD://guide/<章节名>", ""];
+  for (const s of sections) lines.push(`${s.name.padEnd(14)}${s.summary}`);
+  return lines.join("\n");
+}
+
+/** 章节正文；未知章节返回 null。 */
+export function guideSection(name) {
+  const target = String(name || "").toUpperCase();
+  const sections = parseGuideSections(guideMarkdown);
+  const hit = sections.find((s) => s.name === target);
+  return hit ? hit.body.join("\n").trim() : null;
+}
+
+function guideRoute(section) {
+  if (!section) {
+    return { content: [{ type: "text", text: guideIndex() }], details: { guide: "index" } };
+  }
+  const body = guideSection(section);
+  if (body === null) {
+    return {
+      content: [{ type: "text", text: `未知章节：${section}\n\n${guideIndex()}` }],
+      details: { guide: "unknown", section },
+    };
+  }
+  return { content: [{ type: "text", text: body }], details: { guide: "section", section: section.toUpperCase() } };
 }
 
 // ---- 路由实现（复用原 cfg_* 工具语义） ----

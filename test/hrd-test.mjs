@@ -30,7 +30,7 @@ function check(name, ok) {
 const wake = await import(u("lib/wake.js"));
 const sessionLog = await import(u("lib/session-log.js"));
 const pluginCfg = await import(u("lib/plugin-config.js"));
-const { parseHrdUri, resolveSessionDetail } = await import(u("tools/hrd.js"));
+const { parseHrdUri, resolveSessionDetail, guideIndex, guideSection, parseGuideSections } = await import(u("tools/hrd.js"));
 
 // ---------- deferred 唤醒（宿主原生任务终态投递） ----------
 section("deferred 唤醒（register/resolve/fail）");
@@ -102,6 +102,18 @@ section("parseHrdUri（HRD 资源协议路由）");
   check("非法 URI 返回 null", parseHrdUri("HRD://sessions/abc.md") === null && parseHrdUri("http://x") === null && parseHrdUri("") === null);
   check("缺省 method 一律 GET（body.action 不推断）", parseHrdUri("HRD://connection/my-server", undefined, { action: "connect" })?.kind === "connection");
   check("action=save 路由（创建配置）", parseHrdUri("HRD://connection/my-server", "POST", { action: "save" })?.kind === "connection-action" && parseHrdUri("HRD://connection/my-server", "POST", { action: "save" })?.action === "save");
+  check("guide 根（索引）", parseHrdUri("HRD://guide")?.kind === "guide" && parseHrdUri("HRD://guide")?.section === null);
+  check("guide 章节（路径段）", parseHrdUri("HRD://guide/exec")?.kind === "guide" && parseHrdUri("HRD://guide/exec")?.section === "exec");
+  check("guide 章节大小写不敏感", parseHrdUri("hrd://GUIDE/Exec")?.kind === "guide" && parseHrdUri("hrd://GUIDE/Exec")?.section === "Exec");
+  check("guide 多余路径段返回 null", parseHrdUri("HRD://guide/x/y") === null);
+  check("guide 带 query 视为非法（? 不进白名单）", parseHrdUri("HRD://guide?section=exec") === null);
+}
+
+// ---------- guide 手册（HRD://guide） ----------
+section("guide 手册（索引 / 章节 / 未知章节）");
+{
+  const parsed = parseGuideSections("## A\n\nfirst line of A\nrest\n## B\nsecond");
+  check("sections 解析：标题/摘要（跳过空行）/正文", parsed.length === 2 && parsed[0].name === "A" && parsed[0].summary === "first line of A" && parsed[1].name === "B" && parsed[1].summary === "second");
 }
 
 // ---------- resolveSessionDetail ----------

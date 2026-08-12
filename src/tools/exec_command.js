@@ -4,7 +4,7 @@ import * as wake from "../lib/wake.js";
 import { attachCard } from "../lib/card-utils.js";
 import { resolveAgentName } from "../lib/agent-name.js";
 export const name = "exec_command";
-export const description = "Execute a shell command on a remote host. Auto-connects when the profile is not connected. With tty: true, starts an interactive session and returns a sessionId for hrd_write_stdin.";
+export const description = "Execute a shell command on a remote host. Auto-connects when the profile is not connected. With tty: true, starts an interactive session and returns a sessionId for hrd_write_stdin. 命令中不得内联凭据（curl -u user:pwd、export TOKEN=...）——命令原文落盘会忠实保留；需要带秘密时先 write 到远端脚本再执行。";
 
 export const parameters = {
   type: "object",

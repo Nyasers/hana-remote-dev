@@ -30,7 +30,7 @@ function collectFiles() {
     ["manifest.json", path.join(root, "manifest.json")],
     ["README.md", path.join(root, "README.md")],
   ];
-  for (const dir of ["native", "routes", "skills", "app"]) {
+  for (const dir of ["native", "routes", "app"]) {
     const p = path.join(dist, dir);
     if (fs.existsSync(p)) collectDir(dir, p, files);
   }
