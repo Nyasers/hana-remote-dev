@@ -8,7 +8,6 @@ import fs from "node:fs";
 import path from "node:path";
 
 import * as execCommand from "./tools/exec_command.js";
-import * as waitTool from "./tools/wait.js";
 import * as fileTool from "./tools/file.js";
 import * as findTool from "./tools/find.js";
 import * as grepTool from "./tools/grep.js";
@@ -77,7 +76,7 @@ function wrapTool(tool) {
 
       // ── stream 分支：非阻塞 + 后台执行 + deferred 完成唤醒 ──
       // 任何远程操作可异步化（grep/find/read/ls/write/edit）：Agent 发起后不阻塞
-      // 回合，完成被宿主唤醒（结果随 hana-background-result 直达），wait 主动兑底。
+      // 回合，完成被宿主唤醒（结果随 hana-background-result 直达）。
       // writeStdin（tty 输入）与 hrd（查询）语义上没有「完成」概念，不参与。
       if (!selfManaged && tool.name !== "writeStdin" && tool.name !== "hrd" && input?.stream === true) {
         const sentry = buildHistoryEntry(tool.name, input, started, null, null);
@@ -276,7 +275,7 @@ function buildHistoryEntry(toolName, input, started, result, err) {
 // wrapper 跳过避免双记录。
 export const hrdTools = [
   hrdTool,
-  ...[execCommand, waitTool, fileTool, findTool, grepTool, lsTool, readTool, writeTool, editTool, writeStdin].map(wrapTool),
+  ...[execCommand, fileTool, findTool, grepTool, lsTool, readTool, writeTool, editTool, writeStdin].map(wrapTool),
 ];
 
 // ---- 生命周期（原 onload 体；返回 dispose） ----
