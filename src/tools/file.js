@@ -419,6 +419,7 @@ async function withOperation({ connId, kind, label, kill, agentName, stream = fa
     agentName,
     kind,
     label,
+    tool: "file",
     kill: () => {
       killed = true;
       try {

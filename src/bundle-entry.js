@@ -84,6 +84,7 @@ function wrapTool(tool) {
         const sopId = operations.startOperation({
           connId: sentry.connId,
           kind: tool.name,
+          tool: tool.name,
           label: sentry.label,
           agentName,
         });
@@ -164,6 +165,7 @@ function wrapTool(tool) {
         opId = operations.startOperation({
           connId: entry.connId,
           kind: tool.name,
+          tool: tool.name,
           label: entry.label,
           agentName,
         });

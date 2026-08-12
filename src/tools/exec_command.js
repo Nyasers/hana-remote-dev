@@ -203,6 +203,7 @@ export async function execute(input, ctx) {
         connInstance,
         agentName,
         kind: "exec",
+        tool: "exec_command",
         label: input.command,
         kill: () => {
           killed = true;
@@ -348,6 +349,7 @@ export async function execute(input, ctx) {
       connInstance,
       agentName,
       kind: "exec",
+      tool: "exec_command",
       label: input.command,
       kill: () => {
         killed = true;
