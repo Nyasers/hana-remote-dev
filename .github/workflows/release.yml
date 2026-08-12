@@ -1,0 +1,154 @@
+# Release — 四平台构建 + 单点发布（对齐宿主 openhanako build.yml 的设计）
+# 触发: push tag v*（version.mjs 打 tag 后自动触发）或手动 workflow_dispatch
+#
+# 关键设计（借鉴宿主）:
+#   - matrix include + fail-fast: false（四平台互不拖累）
+#   - release job 单点控制: draft release 创建、上传、资产核验都在这一个 job（防并发覆盖）
+#   - Verify release assets 硬约束: 四平台 zip + sha256 缺一 CI fail（防 shell 写漏/构建挂）
+#   - 平台限定文件名: hana-remote-dev-<ver>-<platform>.zip（防同名不同内容互相覆盖）
+#
+# 与宿主的差异（必须）:
+#   - 宿主 electron-builder 交叉打包（arm64 runner 出 x64）；我们的 .node 是 node-gyp
+#     本机编译，无法交叉 → macOS 必须真实双 runner（macos-13=x64, macos-latest=arm64）
+#   - node-gyp 编译由 npm ci 的 install script 完成（trustedDependencies 已放行）
+#   - verify-native.mjs 魔数校验 fail-closed（防 copy-native 静默 skip → 假加速）
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: Windows-x64
+          - os: ubuntu-latest
+            platform: Linux-x64
+          - os: macos-13
+            platform: macOS-x64
+          - os: macos-latest
+            platform: macOS-arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+          cache: npm
+
+      # node-gyp 编译需工具链：Windows（VS Build Tools）/ macOS（Xcode CLT）runner 预装；
+      # ubuntu 需显式补齐
+      - name: Install native build tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3
+
+      # trustedDependencies 放行 ssh2/cpu-features 的 install script → node-gyp 编译 .node
+      - name: Install dependencies
+        run: npm ci
+
+      # package 内部自动 build（rspack + copy-native + sha256）
+      - name: Package
+        run: npm run package
+
+      # fail-closed：.node 必须存在且是本平台二进制（copy-native skip 会让 CI 红）
+      - name: Verify native modules
+        run: node scripts/verify-native.mjs ${{ matrix.platform }}
+
+      - name: Rename artifacts with platform suffix
+        shell: bash
+        run: |
+          cd releases
+          ZIP=$(ls hana-remote-dev-*.zip | head -1)
+          if [ -z "$ZIP" ]; then
+            echo "::error::no package zip found in releases/"
+            exit 1
+          fi
+          SHA="$ZIP.sha256"
+          mv "$ZIP" "${ZIP%.zip}-${{ matrix.platform }}.zip"
+          mv "$SHA" "${SHA%.zip}-${{ matrix.platform }}.zip.sha256"
+          ls -la
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hrd-${{ matrix.platform }}
+          retention-days: 3
+          path: releases/hana-remote-dev-*.zip*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # 所有 Release 默认 draft + pre-release，稳定版本手动在 GitHub 标记 latest
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            echo "Release ${{ github.ref_name }} already exists, skipping create"
+          else
+            gh release create "${{ github.ref_name }}" \
+              --draft \
+              --prerelease \
+              --title "${{ github.ref_name }}" \
+              --generate-notes
+          fi
+
+      # 单点上传四平台 zip + sha256（--clobber 幂等重传）
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          find artifacts -type f \( -name '*.zip' -o -name '*.sha256' \) -print0 |
+            while IFS= read -r -d '' f; do
+              echo "  $f"
+              gh release upload "${{ github.ref_name }}" "$f" --clobber
+            done
+
+      # 硬约束：四平台 zip + sha256 必须齐全，缺一个 CI fail（draft 留给人手动检查）
+      - name: Verify release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          ASSETS=$(gh release view "${{ github.ref_name }}" --json assets --jq '.assets[].name')
+          echo "=== Release assets ==="
+          echo "$ASSETS"
+          echo ""
+          MISSING=()
+          for P in Windows-x64 Linux-x64 macOS-x64 macOS-arm64; do
+            Z="hana-remote-dev-${{ github.ref_name }}-$P.zip"
+            S="$Z.sha256"
+            echo "$ASSETS" | grep -qxF "$Z" || MISSING+=("$Z")
+            echo "$ASSETS" | grep -qxF "$S" || MISSING+=("$S")
+          done
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "::error::Missing required release assets:"
+            printf '  %s\n' "${MISSING[@]}"
+            exit 1
+          fi
+          echo "All required assets present ✓"
