@@ -1,0 +1,344 @@
+import fs from "node:fs";
+import path from "node:path";
+import { runtimeHolder } from "../lib/runtime.js";
+export const name = "file";
+export const description = "Remote file metadata (stat) and universal copy: local↔remote, remote↔remote (same connection via cp, cross-connection via streaming relay). Local↔local copies also work (intentional redundancy, SCP semantics: bare paths are local).";
+
+export const parameters = {
+  type: "object",
+  properties: {
+    action: {
+      type: "string",
+      enum: ["stat", "copy"],
+      description: "stat: inspect a remote path. copy: copy source to target.",
+    },
+    source: {
+      type: "string",
+      description: "Source path. Remote form: alias:/path. Bare paths are local (e.g. ./local.txt, C:\\data\\x).",
+    },
+    target: {
+      type: "string",
+      description: "Copy target path (required for copy). Same addressing as source.",
+    },
+  },
+  required: ["action", "source"],
+};
+
+export async function execute(input, ctx) {
+  const rd = requireRuntime(ctx);
+  const store = rd.connectionStore;
+
+  const started = Date.now();
+  const label = `${input.action} ${input.source}${input.target ? " → " + input.target : ""}`.slice(0, 160);
+  const rec = (status, summary, exitCode = null, connId = null) => {
+    rd.operations.recordHistory({
+      tool: "file",
+      label,
+      connId,
+      connInstance: connId ? rd.sshClient.instanceOf(connId) : null,
+      status,
+      startedAt: new Date(started).toISOString(),
+      durationMs: Date.now() - started,
+      exitCode,
+      summary: String(summary || "").slice(0, 300),
+    });
+  };
+
+  if (input.action === "stat") {
+    const ref = rd.pathRef.parsePathRef(input.source);
+    if (ref.kind !== "remote") {
+      rec("error", "stat 仅支持远程路径", null, null);
+      return { content: [{ type: "text", text: "hrd_file stat operates on remote paths; use the local file tool for local stats. Got: " + input.source }] };
+    }
+    try {
+      const { connId, path } = await rd.pathRef.resolveRemote(ref, { store });
+      const client = await rd.sshClient.sftp(connId);
+      try {
+        const st = await client.stat(path);
+        rec("ok", `${path}: ${st.isDirectory ? "directory" : "file"}, ${st.size} bytes`, null, connId);
+        return {
+          content: [{ type: "text", text: `${path}:\n  type: ${st.isDirectory ? "directory" : "file"}\n  size: ${st.size} bytes\n  mode: 0o${st.mode?.toString(8) ?? "?"}\n  modified: ${st.modifyTime ?? "-"}` }],
+          details: st,
+        };
+      } finally {
+        client.end();
+      }
+    } catch (err) {
+      rec("error", rd.errText.describeError(err), null, null);
+      return { content: [{ type: "text", text: `Failed to stat: ${rd.errText.describeError(err)}` }] };
+    }
+  }
+
+  if (input.action === "copy") {
+    if (!input.target) {
+      rec("error", "target is required for copy", null, null);
+      return { content: [{ type: "text", text: "target is required for copy." }] };
+    }
+    const src = rd.pathRef.parsePathRef(input.source);
+    const dst = rd.pathRef.parsePathRef(input.target);
+
+    try {
+      if (src.kind === "local" && dst.kind === "local") {
+        await fs.promises.mkdir(path.dirname(dst.path), { recursive: true });
+        await fs.promises.copyFile(src.path, dst.path);
+        rec("ok", `Copied ${src.path} → ${dst.path}`);
+        return { content: [{ type: "text", text: `Copied ${src.path} → ${dst.path}` }] };
+      }
+
+      if (src.kind === "local" && dst.kind === "remote") {
+        const { connId, path: remotePath } = await rd.pathRef.resolveRemote(dst, { store });
+        const client = await rd.sshClient.sftp(connId);
+        let rs = null;
+        let ws = null;
+        let r;
+        try {
+        r = await withOperation(
+            {
+              connId,
+              kind: "copy",
+              label: `Upload ${src.path} → ${input.target}`,
+              kill: () => {
+                try { rs?.destroy(); } catch { /* ignore */ }
+                try { ws?.destroy(); } catch { /* ignore */ }
+                client.unlink(remotePath).catch(() => {});
+              },
+            },
+            async () => {
+              await mkdirpRemote(client, remotePath);
+              rs = fs.createReadStream(src.path);
+              ws = client.createWriteStream(remotePath);
+              await pipeStreams(rs, ws);
+            }
+          );
+        } finally {
+          client.end();
+        }
+        if (r?.__killed) {
+          rec("killed", `upload ${src.path} → ${input.target}`, null, connId);
+          return { content: [{ type: "text", text: `Operation killed: upload ${src.path} → ${input.target}` }] };
+        }
+        rec("ok", `Uploaded ${src.path} → ${input.target}`, null, connId);
+        return { content: [{ type: "text", text: `Uploaded ${src.path} → ${input.target}` }] };
+      }
+
+      if (src.kind === "remote" && dst.kind === "local") {
+        const { connId, path: remotePath } = await rd.pathRef.resolveRemote(src, { store });
+        const client = await rd.sshClient.sftp(connId);
+        let rs = null;
+        let ws = null;
+        let r;
+        try {
+        r = await withOperation(
+            {
+              connId,
+              kind: "copy",
+              label: `Download ${input.source} → ${dst.path}`,
+              kill: () => {
+                try { rs?.destroy(); } catch { /* ignore */ }
+                try { ws?.destroy(); } catch { /* ignore */ }
+                fs.promises.unlink(dst.path).catch(() => {});
+              },
+            },
+            async () => {
+              await fs.promises.mkdir(path.dirname(dst.path), { recursive: true });
+              rs = client.createReadStream(remotePath);
+              ws = fs.createWriteStream(dst.path);
+              await pipeStreams(rs, ws);
+            }
+          );
+        } finally {
+          client.end();
+        }
+        if (r?.__killed) {
+          rec("killed", `download ${input.source} → ${dst.path}`, null, connId);
+          return { content: [{ type: "text", text: `Operation killed: download ${input.source} → ${dst.path}` }] };
+        }
+        rec("ok", `Downloaded ${input.source} → ${dst.path}`, null, connId);
+        return { content: [{ type: "text", text: `Downloaded ${input.source} → ${dst.path}` }] };
+      }
+
+      // remote → remote
+      const srcRes = await rd.pathRef.resolveRemote(src, { store });
+      const dstRes = await rd.pathRef.resolveRemote(dst, { store });
+      if (srcRes.connId === dstRes.connId) {
+        // same connection: server-side cp, zero transfer
+        const client = await rd.sshClient.sftp(srcRes.connId);
+        try {
+          await mkdirpRemote(client, dstRes.path);
+        } finally {
+          client.end();
+        }
+        let stream = null;
+        let killed = false;
+        const result = await withOperation(
+          {
+            connId: srcRes.connId,
+            kind: "copy",
+            label: `Copy ${input.source} → ${input.target}`,
+            kill: () => {
+              killed = true;
+              try {
+                stream?.close();
+              } catch { /* ignore */ }
+            },
+          },
+          async () =>
+            rd.sshClient.exec(srcRes.connId, `cp ${shellQuote(srcRes.path)} ${shellQuote(dstRes.path)}`, {
+              onStream: (s) => {
+                stream = s;
+              },
+            })
+        );
+        if (killed) {
+          rec("killed", `copy ${input.source} → ${input.target}`, null, srcRes.connId);
+          return { content: [{ type: "text", text: `Operation killed: copy ${input.source} → ${input.target}` }] };
+        }
+        if (result.code !== 0) {
+          rec("error", `cp failed (exit ${result.code})`, result.code, srcRes.connId);
+          return { content: [{ type: "text", text: `cp failed (exit ${result.code}): ${result.stderr || "(no stderr)"}` }] };
+        }
+        rec("ok", `Copied ${input.source} → ${input.target}`, 0, srcRes.connId);
+        return { content: [{ type: "text", text: `Copied ${input.source} → ${input.target}` }] };
+      }
+
+      // cross-connection: streaming relay through the local host, no disk
+      const clientA = await rd.sshClient.sftp(srcRes.connId);
+      const clientB = await rd.sshClient.sftp(dstRes.connId);
+      let rs = null;
+      let ws = null;
+      try {
+        const r = await withOperation(
+          {
+            connId: srcRes.connId,
+            kind: "copy",
+            label: `Relay ${input.source} → ${input.target}`,
+            kill: () => {
+              try { rs?.destroy(); } catch { /* ignore */ }
+              try { ws?.destroy(); } catch { /* ignore */ }
+              clientB.unlink(dstRes.path).catch(() => {});
+            },
+          },
+          async () => {
+            await mkdirpRemote(clientB, dstRes.path);
+            rs = clientA.createReadStream(srcRes.path);
+            ws = clientB.createWriteStream(dstRes.path);
+            await pipeStreams(rs, ws);
+          }
+        );
+        if (r?.__killed) {
+          rec("killed", `relay ${input.source} → ${input.target}`, null, srcRes.connId);
+          return { content: [{ type: "text", text: `Operation killed: relay ${input.source} → ${input.target}` }] };
+        }
+      } finally {
+        clientA.end();
+        clientB.end();
+      }
+      rec("ok", `Relayed ${input.source} → ${input.target}`, null, srcRes.connId);
+      return { content: [{ type: "text", text: `Relayed ${input.source} → ${input.target}` }] };
+    } catch (err) {
+      rec("error", rd.errText.describeError(err));
+      return { content: [{ type: "text", text: `Copy failed: ${rd.errText.describeError(err)}` }] };
+    }
+  }
+
+  rec("error", `unknown action: ${input.action}`, null, null);
+  return { content: [{ type: "text", text: `Unknown action: ${input.action} (stat | copy)` }] };
+}
+
+function requireRuntime(ctx) {
+  if (!ctx?._remoteDev && !runtimeHolder.current) {
+    throw new Error("Remote Development 插件尚未初始化，请确认插件已启用。");
+  }
+  return ctx?._remoteDev ?? runtimeHolder.current;
+}
+
+/** Register an in-flight operation for the panel, run the work, always end.
+ *  When the kill function fires and the work then settles with an error,
+ *  resolves with { __killed: true } so callers can report a clean kill. */
+async function withOperation({ connId, kind, label, kill }, work) {
+  const rd = requireRuntime();
+  let killed = false;
+  const opId = rd.operations.startOperation({
+    connId,
+    kind,
+    label,
+    kill: () => {
+      killed = true;
+      try {
+        kill?.();
+      } catch {
+        // kill handlers must not throw into the panel's RPC
+      }
+    },
+  });
+  try {
+    return await work();
+  } catch (err) {
+    if (killed) return { __killed: true };
+    throw err;
+  } finally {
+    rd.operations.endOperation(opId);
+  }
+}
+
+/** mkdir -p the parent directory of a remote path. */
+async function mkdirpRemote(client, remotePath) {
+  const idx = remotePath.lastIndexOf("/");
+  if (idx > 0) {
+    await client.mkdir(remotePath.slice(0, idx), true);
+  }
+}
+
+/** POSIX-safe single-quote shell quoting. */
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Pipe two streams to completion (works for sftp and fs streams alike).
+ * Completion signal: ssh2's sftp write stream does not reliably emit
+ * `finish` (it closes without it), so success is resolved when the read
+ * side has fully ended and the write side has closed with no error.
+ * @param {import("node:stream").Readable} rs
+ * @param {import("node:stream").Writable} ws
+ * @returns {Promise<void>}
+ */
+function pipeStreams(rs, ws) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let rsEnded = false;
+    let wsClosed = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      try {
+        rs.destroy();
+      } catch {
+        // ignore
+      }
+      try {
+        ws.destroy();
+      } catch {
+        // ignore
+      }
+      reject(err);
+    };
+    const succeed = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    rs.on("error", fail);
+    ws.on("error", fail);
+    rs.on("end", () => {
+      rsEnded = true;
+      if (wsClosed) succeed();
+    });
+    ws.on("finish", succeed);
+    ws.on("close", () => {
+      wsClosed = true;
+      if (rsEnded) succeed();
+    });
+    rs.pipe(ws);
+  });
+}

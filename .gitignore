@@ -1,0 +1,8 @@
+node_modules/
+dist/
+releases/
+# SDD 流程产物（spec/tasks/evidence 为本地开发记录，不入库）
+specs/
+SPECS.md
+*.log
+.DS_Store

@@ -1,0 +1,24 @@
+{
+  "name": "hana-remote-dev",
+  "version": "0.6.2",
+  "type": "module",
+  "description": "SSH remote development plugin for Hanako",
+  "dependencies": {
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "@rspack/cli": "^2.1.9",
+    "@rspack/core": "^2.1.9",
+    "archiver": "^8.0.0",
+    "clean-css": "^5.3.3",
+    "terser": "^5.50.0"
+  },
+  "scripts": {
+    "build": "rspack build --config rspack.config.mjs && node src/scripts/copy-native.mjs && node src/scripts/sync-release.mjs",
+    "build:watch": "rspack build --config rspack.config.mjs --watch",
+    "package": "node scripts/package.mjs",
+    "test": "node test/hrd-test.mjs"
+  }
+}
