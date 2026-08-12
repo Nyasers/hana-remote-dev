@@ -19,10 +19,6 @@ export { loadPluginConfig, savePluginConfig };
 const FLUSH_DELAY_MS = 500;
 const FLUSH_FORCE_BYTES = 64 * 1024;
 
-// conn/cfg 事件日志（append-only 单文件，2MB 硬上限，超限停止并标注一次）
-const EVENT_LOG_MAX_BYTES = 2 * 1024 * 1024;
-const eventLogAnnotated = new Set();
-
 /** 配置变更明细：连接字段逐项 old→new；proxyCommand 记 set/cleared；凭据只记 changed（不落明文）。
  * @param {{host?:string,username?:string,port?:number,proxyCommand?:string|null}} prev - 变更前配置
  * @param {{host?:string,username?:string,port?:number,proxyCommand?:string,credentials?:boolean}} next - 本次要改的字段（undefined = 不改）
@@ -88,17 +84,6 @@ export function appendEventLog(dir, ev) {
     const sub = path.join(dir, "events");
     fs.mkdirSync(sub, { recursive: true });
     const p = path.join(sub, `${dayStamp()}.jsonl`);
-    try {
-      if (fs.existsSync(p) && fs.statSync(p).size > EVENT_LOG_MAX_BYTES) {
-        if (!eventLogAnnotated.has(p)) {
-          eventLogAnnotated.add(p);
-          fs.appendFileSync(p, `${JSON.stringify({ v: 1, ts: tsNow(), type: "log:truncated", note: "事件日志已达 2MB 上限，后续事件不再记录" })}\n`, "utf8");
-        }
-        return;
-      }
-    } catch {
-      /* stat 失败按可写处理 */
-    }
     fs.appendFileSync(p, `${JSON.stringify({ v: 1, ts: tsNow(), ...ev })}\n`, "utf8");
   } catch {
     /* best effort */

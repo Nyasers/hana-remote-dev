@@ -295,14 +295,10 @@ section("appendEventLog（统一事件流 jsonl + 上限）");
   const o1 = JSON.parse(lines1[0]);
   check("事件带 ts/type/字段", o1.ts && o1.type === "connection:ok" && o1.ref === "demo" && o1.connInstance === "c1");
   check("tsNow 本地 ISO 带时区毫秒", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/.test(sessionLog.tsNow()));
-  // 超过 2MB 后：标注一次，后续行不再写入
+  // 截断已移除：文件多大都继续写入（按天不可变、完整档案，几百 MB 属正常场景）
   fs.appendFileSync(path.join(dirEvt, "events", evFiles[0]), "x".repeat(2 * 1024 * 1024), "utf8");
-  sessionLog.appendEventLog(dirEvt, { type: "op", opId: "h_after_cap" });
-  sessionLog.appendEventLog(dirEvt, { type: "op", opId: "h_after_cap_2" });
-  const evt2 = fs.readFileSync(path.join(dirEvt, "events", evFiles[0]), "utf8");
-  const anno = (evt2.match(/log:truncated/g) || []).length;
-  check("2MB 上限标注一次", anno === 1);
-  check("超限后不再写入", !evt2.includes("h_after_cap") && !evt2.includes("h_after_cap_2"));
+  sessionLog.appendEventLog(dirEvt, { type: "op", opId: "h_big_file_ok" });
+  check("超大文件仍继续写入", fs.readFileSync(path.join(dirEvt, "events", evFiles[0]), "utf8").includes("h_big_file_ok"));
   // 连接/配置/操作同流单文件（type 分流）
   sessionLog.appendEventLog(dirEvt, { type: "config:set", maxMB: 8 });
   check("同流单文件 type 分流", fs.readdirSync(path.join(dirEvt, "events")).length === 1);
