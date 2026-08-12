@@ -191,11 +191,6 @@
     // 副行：目标（命令/路径）
     html += '<div class="op-sub"></div>';
     html += '<div class="op-summary"></div>';
-    // 完整输出：命令 stdout/stderr 收进详情区（可滚动）
-    html += '<div class="op-output-wrap">';
-    html += '<button class="op-output-toggle" id="op-output-toggle" title="展开/收起完整输出">输出 ▾</button>';
-    html += '<pre class="op-output"></pre>';
-    html += "</div>";
     // 详情：工具 / 连接 / 退出码 / 耗时 / 开始 / 原因
     html += '<div class="op-detail">';
     html += '<div class="op-d-row"><span class="op-d-label">工具</span><span class="op-d-value op-d-tool"></span></div>';
@@ -204,6 +199,11 @@
     html += '<div class="op-d-row"><span class="op-d-label">耗时</span><span class="op-d-value op-d-duration"></span></div>';
     html += '<div class="op-d-row"><span class="op-d-label">开始</span><span class="op-d-value op-d-started"></span></div>';
     html += '<div class="op-d-row op-d-reason-row" style="display:none"><span class="op-d-label">原因</span><span class="op-d-value op-d-reason"></span></div>';
+    html += "</div>";
+    // 完整输出：命令 stdout/stderr 收进详情区（可滚动）
+    html += '<div class="op-output-wrap">';
+    html += '<button class="op-output-toggle" id="op-output-toggle" title="展开/收起完整输出">输出 ▾</button>';
+    html += '<pre class="op-output"></pre>';
     html += "</div>";
     html += "</div>";
     root.innerHTML = html;
