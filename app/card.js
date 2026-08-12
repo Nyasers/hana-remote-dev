@@ -298,13 +298,15 @@
     }
     patchText(".op-duration", fmtDuration(op.durationMs));
 
-    // 副行 / 摘要
+    // 副行 / 摘要：成功路径的结果一律收进「输出」折叠区（详情展开才看），
+    // 摘要行只承载错误提示（失败一眼可见）；副行保持命令/目标不动。
     patchText(".op-sub-text", op.label || "");
     var sumEl = root.querySelector(".op-summary");
     if (sumEl) {
       var sum = op.summary || "";
-      if (sumEl.textContent !== sum) sumEl.textContent = sum;
-      sumEl.classList.toggle("err", !ok && !!sum);
+      var show = !ok && !!sum;
+      if (sumEl.textContent !== (show ? sum : "")) sumEl.textContent = show ? sum : "";
+      sumEl.classList.toggle("err", show);
     }
 
     // 输出区：增量追加（不重建 pre，滚动位置不被重置）

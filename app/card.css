@@ -164,6 +164,7 @@ body[data-hana-theme="dark"] {
   max-height: 120px;
   overflow: auto;
 }
+.op-summary:empty { display: none; }
 .op-summary.err { color: var(--danger, #8b3a3a); }
 
 .op-detail {
