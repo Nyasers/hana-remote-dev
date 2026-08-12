@@ -1,4 +1,5 @@
 import { runtimeHolder } from "../lib/runtime.js";
+import { readFileSync } from "node:fs";
 import * as wake from "../lib/wake.js";
 import { attachCard } from "../lib/card-utils.js";
 import { resolveAgentName } from "../lib/agent-name.js";
@@ -83,10 +84,18 @@ export async function execute(input, ctx) {
           // 输出尾部拼进 summary：断开/结束后历史记录里能看到会话最终输出
           //（类似 subagent 返回结果，避免输出只活在会话卡里）。
           const tail = info.outputTail ? `\n\n── 输出尾部 ──\n${info.outputTail}` : "";
-          // 输出尾部同步进 output：卡片「完整输出」展开可读（会话日志全文在
-          // session 文件，结局 result 带 HRD://session 引用；此处只填尾部，
-          // 避免交互会话长缓冲撑爆卡片）。
-          const output = info.outputTail || "";
+          // 完整输出 = session 日志文件全文（增量落盘的完整会话记录，含终端
+          // 记录与结局段；onClose 时文件已 finalize）。卡片「完整输出」展开
+          // 与 session 文件内容一致；超长由 updateHistory 截断。
+          const logPath = live.sshClient?.getSessionLogPath?.(info.sessionId) || null;
+          let output = "";
+          if (logPath) {
+            try {
+              output = readFileSync(logPath, "utf8");
+            } catch {
+              /* 日志未落盘，保持空 */
+            }
+          }
           if (info.how === "exit") {
             rd.operations.updateHistory(ttyHistId, {
               status: "ok",
