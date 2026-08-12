@@ -65,6 +65,8 @@ function inlineSocketIo() {
   return `${raw}\nwindow.__hrdIo = xt;`;
 }
 
+export { inlineSocketIo };
+
 function escapeAttr(value) {
   return String(value)
     .replace(/&/g, "&amp;")

@@ -274,12 +274,22 @@ function notifyChange() {
 }
 
 /** 追加 in-flight 操作输出（stream 模式增量；超长截断，内存只留最近窗口） */
+let changeNotifyTimer = null;
+function scheduleChangeNotify() {
+  if (changeNotifyTimer) return;
+  changeNotifyTimer = setTimeout(() => {
+    changeNotifyTimer = null;
+    notifyChange();
+  }, 250);
+}
 export function appendOpOutput(opId, chunk) {
   const op = operations.get(opId);
   if (!op) return false;
   const next = String(op.output || "") + String(chunk || "");
   op.output = next.length > OUTPUT_MAX_CHARS ? next.slice(-OUTPUT_MAX_CHARS) : next;
   op._updatedAt = Date.now();
+  // stream 增量：throttle 广播（卡片 Socket.IO 实时推进，高频输出不刷屏）
+  scheduleChangeNotify();
   return true;
 }
 

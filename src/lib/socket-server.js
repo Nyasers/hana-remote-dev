@@ -147,6 +147,8 @@ export class LocalSocketServer {
     const H = this._handlers;
 
     io.on("connection", (socket) => {
+      // 连接角色（panel / card）：广播策略后续可按角色过滤
+      socket.data.role = socket.handshake?.query?.role || "panel";
       // Initial sync: tell the fresh panel to pull the list once.
       socket.emit("state:changed", { reason: "open" });
 

@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { readOperation } from "./operations.js";
+import { inlineSocketIo } from "./ui-routes.js";
 
 const APP_DIR = path.join(__dirname, "..", "app");
 
@@ -158,7 +159,9 @@ function readCardAssets() {
 export default function registerCardRoutes(app, ctx) {
   const base = "/api/plugins/" + ctx.pluginId;
 
-  // 卡片页（iframe 内容）：opId 参数 + 宿主注入的主题样式
+  // 卡片页（iframe 内容）：opId 参数 + 宿主注入的主题样式。
+  // socket.io-client 内联注入（与 /sidebar 同机制）：卡片经本地 Socket.IO
+  // 订阅 state:changed（operation 变更实时推送），HTTP 轮询降级为断线兑底。
   app.get("/card/op", (c) => {
     const assets = readCardAssets();
     const opId = String(c.req.query("opId") || "");
@@ -177,7 +180,8 @@ ${hcLink}
 <body data-hana-theme="${esc(th)}">
 <div id="op-root" data-op="${esc(opId)}"></div>
 <script>window.__API="${base}";<\/script>
-<script>${assets.js}<\/script>
+<script type="module">${inlineSocketIo()}<\/script>
+<script type="module">${assets.js}<\/script>
 </body>
 </html>`);
   });

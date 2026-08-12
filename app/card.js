@@ -46,10 +46,10 @@
     } catch (e) { /* 忽略 */ }
   }
 
-  // ── 状态机：running 持续轮询（输出增量推进），完成态渲染一次即停 ──
+  // ── 状态机：Socket.IO 实时通道优先，轮询仅兑底 ──
   var timer = null;
 
-  function poll() {
+  function refresh() {
     apiFetch("/ops/status?opId=" + encodeURIComponent(opId), { cache: "no-store" })
       .then(function (r) { return r.json(); })
       .then(function (data) {
@@ -59,12 +59,54 @@
           return;
         }
         render(data.op);
-        if (data.op.status !== "running") stop(); // 终局停；running 持续轮询
+        if (data.op.status !== "running") stop(); // 终局：停轮询 + 断 socket
       })
       .catch(function () { /* 瞬时网络错误静默重试 */ });
   }
 
-  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+  function stop() {
+    if (timer) { clearInterval(timer); timer = null; }
+    // 终局主动断开：操作已完成，不再占连接（意外断线由 socket.io 重连承接）
+    if (io && socketReady) {
+      try { io.disconnect(); } catch (e) { /* ignore */ }
+      socketReady = false;
+    }
+  }
+
+  // ── Socket.IO 实时通道：订阅 state:changed（operation 变更即刷新）──
+  // socket.io 传输层自带 polling 兜底（websocket 不可用自动降级 HTTP 长轮询），
+  // 无需手动双通道；仅当 socket-info 不可达（插件无本地 socket）才退手动轮询。
+  // 认证带 role: card（服务端记录，广播策略后续可按角色过滤）。
+  var io = null;
+  var socketReady = false;
+
+  function setupSocket() {
+    return apiFetch("/api/connections/socket-info", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (info) {
+        if (!info || !info.ok || !window.__hrdIo || !info.port || !info.token) return false;
+        io = window.__hrdIo("http://127.0.0.1:" + info.port, {
+          query: { token: info.token, role: "card" },
+          transports: ["websocket", "polling"],
+          reconnectionAttempts: 8, // 断线有限重试，避免无限挂
+          timeout: 5000,
+        });
+        io.on("connect", function () {
+          socketReady = true;
+          refresh(); // 连上即拉一次，补 socket 建立期间的变化
+        });
+        io.on("state:changed", function (ev) {
+          if (!ev || (ev.reason && ev.reason !== "operation" && ev.reason !== "open")) return;
+          refresh();
+        });
+        io.on("disconnect", function () {
+          socketReady = false;
+        });
+        return true;
+      })
+      .catch(function () { return false; });
+  }
+
 
   function fmtDuration(ms) {
     if (ms == null) return "";
@@ -253,6 +295,10 @@
 
   // ── 启动 ──
   window.addEventListener("load", function () { setTimeout(reportSize, 60); });
-  poll();
-  timer = setInterval(poll, 600);
+  refresh(); // 首拉（创建态）
+  setupSocket().then(function (ok) {
+    // socket 可用：实时推送驱动，轮询不再启动
+    // socket 不可用（socket-info 拿不到）：手动轮询兑底（慢速）
+    if (!ok) timer = setInterval(refresh, 2500);
+  });
 })();
