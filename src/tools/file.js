@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { runtimeHolder } from "../lib/runtime.js";
+import { attachCard } from "../lib/card-utils.js";
 export const name = "file";
 export const description = "Remote file metadata (stat) and universal copy: local↔remote, remote↔remote (same connection via cp, cross-connection via streaming relay). Local↔local copies also work (intentional redundancy, SCP semantics: bare paths are local).";
 
@@ -31,7 +32,7 @@ export async function execute(input, ctx) {
   const started = Date.now();
   const label = `${input.action} ${input.source}${input.target ? " → " + input.target : ""}`.slice(0, 160);
   const rec = (status, summary, exitCode = null, connId = null) => {
-    rd.operations.recordHistory({
+    const id = rd.operations.recordHistory({
       tool: "file",
       label,
       connId,
@@ -42,30 +43,40 @@ export async function execute(input, ctx) {
       exitCode,
       summary: String(summary || "").slice(0, 300),
     });
+    return id;
   };
 
   if (input.action === "stat") {
     const ref = rd.pathRef.parsePathRef(input.source);
     if (ref.kind !== "remote") {
-      rec("error", "stat 仅支持远程路径", null, null);
-      return { content: [{ type: "text", text: "hrd_file stat operates on remote paths; use the local file tool for local stats. Got: " + input.source }] };
+      const hid = rec("error", "stat 仅支持远程路径", null, null);
+      return attachCard(
+        { content: [{ type: "text", text: "hrd_file stat operates on remote paths; use the local file tool for local stats. Got: " + input.source }] },
+        { opId: hid, label, summary: "stat 仅支持远程路径" }
+      );
     }
     try {
       const { connId, path } = await rd.pathRef.resolveRemote(ref, { store });
       const client = await rd.sshClient.sftp(connId);
       try {
         const st = await client.stat(path);
-        rec("ok", `${path}: ${st.isDirectory ? "directory" : "file"}, ${st.size} bytes`, null, connId);
-        return {
-          content: [{ type: "text", text: `${path}:\n  type: ${st.isDirectory ? "directory" : "file"}\n  size: ${st.size} bytes\n  mode: 0o${st.mode?.toString(8) ?? "?"}\n  modified: ${st.modifyTime ?? "-"}` }],
-          details: st,
-        };
+        const hid = rec("ok", `${path}: ${st.isDirectory ? "directory" : "file"}, ${st.size} bytes`, null, connId);
+        return attachCard(
+          {
+            content: [{ type: "text", text: `${path}:\n  type: ${st.isDirectory ? "directory" : "file"}\n  size: ${st.size} bytes\n  mode: 0o${st.mode?.toString(8) ?? "?"}\n  modified: ${st.modifyTime ?? "-"}` }],
+            details: st,
+          },
+          { opId: hid, label, summary: `${path}: ${st.isDirectory ? "directory" : "file"}, ${st.size} bytes` }
+        );
       } finally {
         client.end();
       }
     } catch (err) {
-      rec("error", rd.errText.describeError(err), null, null);
-      return { content: [{ type: "text", text: `Failed to stat: ${rd.errText.describeError(err)}` }] };
+      const hid = rec("error", rd.errText.describeError(err), null, null);
+      return attachCard(
+        { content: [{ type: "text", text: `Failed to stat: ${rd.errText.describeError(err)}` }] },
+        { opId: hid, label, summary: rd.errText.describeError(err) }
+      );
     }
   }
 
@@ -115,10 +126,16 @@ export async function execute(input, ctx) {
         }
         if (r?.__killed) {
           rec("killed", `upload ${src.path} → ${input.target}`, null, connId);
-          return { content: [{ type: "text", text: `Operation killed: upload ${src.path} → ${input.target}` }] };
+          return attachCard(
+            { content: [{ type: "text", text: `Operation killed: upload ${src.path} → ${input.target}` }] },
+            { opId: r.opId, label, summary: "operation killed" }
+          );
         }
         rec("ok", `Uploaded ${src.path} → ${input.target}`, null, connId);
-        return { content: [{ type: "text", text: `Uploaded ${src.path} → ${input.target}` }] };
+        return attachCard(
+          { content: [{ type: "text", text: `Uploaded ${src.path} → ${input.target}` }] },
+          { opId: r.opId, label, summary: `Uploaded ${src.path} → ${input.target}` }
+        );
       }
 
       if (src.kind === "remote" && dst.kind === "local") {
@@ -151,10 +168,16 @@ export async function execute(input, ctx) {
         }
         if (r?.__killed) {
           rec("killed", `download ${input.source} → ${dst.path}`, null, connId);
-          return { content: [{ type: "text", text: `Operation killed: download ${input.source} → ${dst.path}` }] };
+          return attachCard(
+            { content: [{ type: "text", text: `Operation killed: download ${input.source} → ${dst.path}` }] },
+            { opId: r.opId, label, summary: "operation killed" }
+          );
         }
         rec("ok", `Downloaded ${input.source} → ${dst.path}`, null, connId);
-        return { content: [{ type: "text", text: `Downloaded ${input.source} → ${dst.path}` }] };
+        return attachCard(
+          { content: [{ type: "text", text: `Downloaded ${input.source} → ${dst.path}` }] },
+          { opId: r.opId, label, summary: `Downloaded ${input.source} → ${dst.path}` }
+        );
       }
 
       // remote → remote
@@ -191,14 +214,23 @@ export async function execute(input, ctx) {
         );
         if (killed) {
           rec("killed", `copy ${input.source} → ${input.target}`, null, srcRes.connId);
-          return { content: [{ type: "text", text: `Operation killed: copy ${input.source} → ${input.target}` }] };
+          return attachCard(
+            { content: [{ type: "text", text: `Operation killed: copy ${input.source} → ${input.target}` }] },
+            { opId: result.opId, label, summary: "operation killed" }
+          );
         }
         if (result.code !== 0) {
           rec("error", `cp failed (exit ${result.code})`, result.code, srcRes.connId);
-          return { content: [{ type: "text", text: `cp failed (exit ${result.code}): ${result.stderr || "(no stderr)"}` }] };
+          return attachCard(
+            { content: [{ type: "text", text: `cp failed (exit ${result.code}): ${result.stderr || "(no stderr)"}` }] },
+            { opId: result.opId, label, summary: `cp failed (exit ${result.code})` }
+          );
         }
         rec("ok", `Copied ${input.source} → ${input.target}`, 0, srcRes.connId);
-        return { content: [{ type: "text", text: `Copied ${input.source} → ${input.target}` }] };
+        return attachCard(
+          { content: [{ type: "text", text: `Copied ${input.source} → ${input.target}` }] },
+          { opId: result.opId, label, summary: `Copied ${input.source} → ${input.target}` }
+        );
       }
 
       // cross-connection: streaming relay through the local host, no disk
@@ -227,17 +259,26 @@ export async function execute(input, ctx) {
         );
         if (r?.__killed) {
           rec("killed", `relay ${input.source} → ${input.target}`, null, srcRes.connId);
-          return { content: [{ type: "text", text: `Operation killed: relay ${input.source} → ${input.target}` }] };
+          return attachCard(
+            { content: [{ type: "text", text: `Operation killed: relay ${input.source} → ${input.target}` }] },
+            { opId: r.opId, label, summary: "operation killed" }
+          );
         }
       } finally {
         clientA.end();
         clientB.end();
       }
       rec("ok", `Relayed ${input.source} → ${input.target}`, null, srcRes.connId);
-      return { content: [{ type: "text", text: `Relayed ${input.source} → ${input.target}` }] };
+      return attachCard(
+        { content: [{ type: "text", text: `Relayed ${input.source} → ${input.target}` }] },
+        { opId: r.opId, label, summary: `Relayed ${input.source} → ${input.target}` }
+      );
     } catch (err) {
-      rec("error", rd.errText.describeError(err));
-      return { content: [{ type: "text", text: `Copy failed: ${rd.errText.describeError(err)}` }] };
+      const hid = rec("error", rd.errText.describeError(err));
+      return attachCard(
+        { content: [{ type: "text", text: `Copy failed: ${rd.errText.describeError(err)}` }] },
+        { opId: hid, label, summary: rd.errText.describeError(err) }
+      );
     }
   }
 
@@ -272,9 +313,14 @@ async function withOperation({ connId, kind, label, kill }, work) {
     },
   });
   try {
-    return await work();
+    const r = await work();
+    // 统一在返回对象上挂 opId：调用处据此注入卡片（work 可能无返回值）
+    const out = r && typeof r === "object" ? r : {};
+    out.opId = opId;
+    if (killed) out.__killed = true;
+    return out;
   } catch (err) {
-    if (killed) return { __killed: true };
+    if (killed) return { __killed: true, opId };
     throw err;
   } finally {
     rd.operations.endOperation(opId);

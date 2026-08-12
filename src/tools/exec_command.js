@@ -1,5 +1,6 @@
 import { runtimeHolder } from "../lib/runtime.js";
 import * as wake from "../lib/wake.js";
+import { attachCard } from "../lib/card-utils.js";
 export const name = "exec_command";
 export const description = "Execute a shell command on a remote host. Auto-connects when the profile is not connected. With tty: true, starts an interactive session and returns a sessionId for hrd_write_stdin.";
 
@@ -51,6 +52,8 @@ export async function execute(input, ctx) {
   let exitCode = null;
   let summary = "";
   let ttyHistId = null; // tty 会话：创建时记录，关闭时按结局回写同一条
+  let opId = null; // 非 tty 执行：startOperation 的 opId（函数级，供 catch/finally 注入卡片）
+  let catchRecorded = false; // catch 路径已自行 recordHistory（连接失败等 op 创建前抛错），外层 finally 跳过
 
   try {
     if (input.tty) {
@@ -168,10 +171,13 @@ export async function execute(input, ctx) {
         exitCode: null,
         summary,
       });
-      return {
-        content: [{ type: "text", text: parts.join("\n") }],
-        details: { sessionId, connectionId: connId },
-      };
+      return attachCard(
+        {
+          content: [{ type: "text", text: parts.join("\n") }],
+          details: { sessionId, connectionId: connId },
+        },
+        { opId: ttyHistId, label: input.command, summary }
+      );
     }
 
     // 常规 exec：复用常规连接（排除会话连接）
@@ -179,7 +185,7 @@ export async function execute(input, ctx) {
     connInstance = rd.sshClient.instanceOf(connId);
     let stream = null;
     let killed = false;
-    const opId = rd.operations.startOperation({
+    opId = rd.operations.startOperation({
       connId,
       connInstance,
       kind: "exec",
@@ -206,7 +212,10 @@ export async function execute(input, ctx) {
       if (killed) {
         status = "killed";
         summary = "operation killed";
-        return { content: [{ type: "text", text: `Operation killed: ${input.command}` }] };
+        return attachCard(
+          { content: [{ type: "text", text: `Operation killed: ${input.command}` }] },
+          { opId, label: input.command, summary }
+        );
       }
       const parts = [];
       if (result.stdout) parts.push(`── stdout ──\n${result.stdout}`);
@@ -238,7 +247,10 @@ export async function execute(input, ctx) {
         const outText = (result.stdout || "").trim();
         summary = (outText ? outText.split("\n")[0].slice(0, 160) : "") + ` (exit ${result.code})`;
       }
-      return { content: [{ type: "text", text: parts.join("\n") }] };
+      return attachCard(
+        { content: [{ type: "text", text: parts.join("\n") }] },
+        { opId, label: input.command, summary }
+      );
     } finally {
       rd.operations.endOperation(opId);
     }
@@ -249,21 +261,40 @@ export async function execute(input, ctx) {
     summary = timedOut
       ? `命令超时（超过 ${input.timeout || 30}s）`
       : String(err?.message || err).slice(0, 300);
-    return {
-      content: [
-        {
-          type: "text",
-          text: timedOut
-            ? `Command timeout: exceeded ${input.timeout || 30}s`
-            : `Execution failed: ${rd.errText.describeError(err)}`,
-        },
-      ],
-    };
+    // catch 路径（连接失败/启动前抛错）可能没有 opId：自行记录历史拿 h_id 兜底注入卡片，
+    // 置 catchRecorded 让外层 finally 跳过（避免双记录；连接失败本就不写命令日志）。
+    const hid = rd.operations.recordHistory({
+      tool: "exec_command",
+      label: input.command,
+      connId,
+      connInstance,
+      status,
+      reason,
+      startedAt: new Date(started).toISOString(),
+      durationMs: Date.now() - started,
+      exitCode,
+      summary,
+      opRef: opId || undefined,
+    });
+    catchRecorded = true;
+    return attachCard(
+      {
+        content: [
+          {
+            type: "text",
+            text: timedOut
+              ? `Command timeout: exceeded ${input.timeout || 30}s`
+              : `Execution failed: ${rd.errText.describeError(err)}`,
+          },
+        ],
+      },
+      { opId: opId || hid, label: input.command, summary }
+    );
   } finally {
     // 唯一收口：所有路径（ok / killed / interrupted / error）只记一条历史。
     // tty 会话例外：由 tty 分支自行记录（status=ok + 会话创建），结局在
     // 会话关闭时通过 updateHistory 回写——单一收口不适用（结局异步）。
-    if (!ttyHistId) {
+    if (!ttyHistId && !catchRecorded) {
       rd.operations.recordHistory({
       tool: "exec_command",
       label: input.command,
@@ -275,6 +306,7 @@ export async function execute(input, ctx) {
       durationMs: Date.now() - started,
       exitCode,
       summary,
+      opRef: opId,
     });
       // 一次性命令记录：执行已发生（execResult 非空）才落盘；连接失败等未执行场景不记。
       writeCommandLog(rd, input, connId, execResult, { status, reason, started });

@@ -11,13 +11,18 @@ import { appendEventLog, eventTs } from "./session-log.js";
  * Push (S2C): state:changed { reason: "operation" } on start/end/kill.
  */
 
-let opCounter = 0;
-const operations = new Map();
-const listeners = new Set();
+// 模块级状态挂 globalThis：loadBundle() 每次 new Function 执行都会产生全新模块闭包，
+// 若工具执行（onload 注册）与卡片 route（routes 壳）各持一份 operations，
+// 历史互不可见（卡片会报「操作记录不存在」）。与 download-progress 的
+// globalThis 单例同思路：闭包变量重新绑定，但都指向同一份状态对象。
+const __G = (globalThis.__hrd_ops_state ??= {});
+let opCounter = (__G.opCounter ??= 0);
+const operations = (__G.operations ??= new Map());
+const listeners = (__G.listeners ??= new Set());
 
 // 操作日志落盘目录（logs 根目录；null = 不落盘）。由 install 注入，
 // 每次 recordHistory / updateHistory 追加一行 logs/operations/<date>.md。
-let opLogDir = null;
+let opLogDir = (__G.opLogDir ??= null);
 export function setOperationLogDir(dir) {
   opLogDir = dir || null;
 }
@@ -36,7 +41,7 @@ function opLogLine(entry) {
 
 // 已完成操作历史（环形缓冲，面板「已完成操作」区块的数据源）
 const HISTORY_MAX = 50;
-const history = [];
+const history = (__G.history ??= []);
 
 /** 工具名 → 操作类型归一化（历史条目 kind 字段；面板类型图标依赖） */
 const TOOL_KIND = {
@@ -74,6 +79,8 @@ export function recordHistory(entry) {
     durationMs: entry.durationMs ?? 0,
     exitCode: entry.exitCode ?? null,
     summary: entry.summary || "",
+    // 关联 in-flight op（wrapTool 的 startOperation opId）；卡片按此查询完成态
+    opRef: entry.opRef || null,
   });
   if (history.length > HISTORY_MAX) history.length = HISTORY_MAX;
   appendOpLogLine(opLogLine(entry));
@@ -108,6 +115,19 @@ export function updateHistory(id, patch) {
 /** List finished operations (newest first). */
 export function listHistory() {
   return history.map((h) => ({ ...h }));
+}
+
+/**
+ * Look up a finished operation by id. Accepts either the history id
+ * (h_xxx) or the in-flight op id (op_xxx, via the opRef link).
+ * Used by the operation card status route.
+ * @param {string} id
+ * @returns {object|null} history entry snapshot (sans internals)
+ */
+export function getHistory(id) {
+  if (!id) return null;
+  const h = history.find((e) => e.opId === id || e.opRef === id);
+  return h ? { ...h } : null;
 }
 
 /** Subscribe to operation changes. Returns an unsubscribe function. */

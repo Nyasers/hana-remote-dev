@@ -13,7 +13,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".
 const dist = path.join(root, "dist");
 
 // JS：全部过 terser（壳为 ESM 保留 module:true；bundle 为 CJS IIFE 用默认）
-const JS_ESM_ITEMS = ["index.js", "routes/api.js", "routes/ui.js"];
+const JS_ESM_ITEMS = ["index.js", "routes/api.js", "routes/ui.js", "routes/card.js"];
 const JS_CJS_ITEM = "native/bundle.cjs";
 
 for (const rel of JS_ESM_ITEMS) {
@@ -37,7 +37,7 @@ for (const rel of JS_ESM_ITEMS) {
 }
 
 // 非 JS 静态项：原样拷贝
-const RAW_ITEMS = ["manifest.json", "skills"];
+const RAW_ITEMS = ["manifest.json", "skills", "app"];
 for (const item of RAW_ITEMS) {
   fs.cpSync(path.join(root, item), path.join(dist, item), { recursive: true });
   console.log(`sync: ${item}`);

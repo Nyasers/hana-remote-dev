@@ -1,0 +1,127 @@
+/* card.css — 操作卡片（跟随 Hana 设计语言：宿主注入的主题变量） */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: system-ui, -apple-system, "PingFang SC", sans-serif;
+  font-size: 13px;
+  color: var(--text, #3b3d3f);
+  background: transparent;
+  padding: 2px 8px;
+  min-height: 0;
+}
+/* 深色主题回退：宿主未注入主题变量时，深色界面下不能沿用深色文字 fallback */
+body[data-hana-theme="dark"],
+body[data-hana-theme="midnight"],
+body[data-hana-theme="midnight-contrast"] {
+  color: var(--text, #c8c8c8);
+}
+@media (prefers-color-scheme: dark) {
+  body { color: var(--text, #c8c8c8); }
+}
+
+.op {
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text, #3b3d3f);
+}
+
+.op-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.op-icon {
+  font-size: 15px;
+  flex: none;
+  line-height: 1;
+}
+
+.op-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-sub {
+  margin-top: 1px;
+  font-size: 12px;
+  color: var(--text-dim, #6b6f73);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-badge {
+  flex: none;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-card, rgba(83, 125, 150, 0.08));
+  color: var(--text-dim, #6b6f73);
+  white-space: nowrap;
+}
+.op-badge.ok { color: var(--green, #7bae7f); background: rgba(123, 174, 127, 0.12); }
+.op-badge.fail { color: var(--danger, #8b3a3a); background: rgba(139, 58, 58, 0.1); }
+
+.op-meta {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-dim, #8e9196);
+  white-space: nowrap;
+}
+
+.op-fold {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--text-faint, #8e9196);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: transform 0.15s ease;
+}
+.op-fold:hover { background: rgba(0, 0, 0, 0.05); }
+.op-fold.open { transform: rotate(90deg); }
+
+.op-summary {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-dim, #6b6f73);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow: auto;
+}
+.op-summary.err { color: var(--danger, #8b3a3a); }
+
+.op-detail {
+  display: none;
+  margin-top: 6px;
+  border-top: 1px solid var(--border, rgba(122, 96, 88, 0.18));
+  padding-top: 6px;
+}
+.op.expanded .op-detail { display: block; }
+
+.op-d-row {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  padding: 2px 0;
+}
+.op-d-label {
+  flex: none;
+  width: 56px;
+  color: var(--text-faint, #9a9ea2);
+}
+.op-d-value {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+}

@@ -43,6 +43,7 @@ import { runtimeHolder } from "./lib/runtime.js";
 
 import registerUiRoutes from "./lib/ui-routes.js";
 import registerApiRoutes from "./lib/api-routes.js";
+import registerCardRoutes from "./lib/card-routes.js";
 
 // ---- 工具定义（registerTool 直接消费：name/description/parameters/execute） ----
 
@@ -84,7 +85,21 @@ function wrapTool(tool) {
         if (!selfManaged) {
           const out = result?.content?.[0]?.text || "";
           const errLike = TOOL_ERR_TEXT.test(out);
-          operations.recordHistory(buildHistoryEntry(tool.name, input, started, result, errLike ? new Error(out.slice(0, 120)) : null));
+          const entry = buildHistoryEntry(tool.name, input, started, result, errLike ? new Error(out.slice(0, 120)) : null);
+          operations.recordHistory({ ...entry, opRef: opId });
+          // 操作卡片：插件工具在宿主 UI 只有 _fallback 兜底（"🔧 忙碌中…"），
+          // 卡片补足操作详情（目标 / 状态 / 耗时 / 摘要），随 details.card 渲染在工具块下方。
+          if (result && typeof result === "object" && opId) {
+            result.details = {
+              ...(result.details || {}),
+              card: {
+                route: `/card/op?opId=${opId}`,
+                title: entry.label || tool.name,
+                description: entry.summary || entry.label || tool.name,
+                aspectRatio: "16:1", // 初始高度，配合 ui.resize 自适应
+              },
+            };
+          }
         }
         return result;
       } catch (err) {
@@ -256,6 +271,7 @@ export default class HanaRemoteDevPlugin {
   static hrdTools = hrdTools;
   static uiRoutes = registerUiRoutes;
   static apiRoutes = registerApiRoutes;
+  static cardRoutes = registerCardRoutes;
 
   async onload() {
     // hrdTools 已在导出时统一过 wrapTool（操作工具带 operation/history 记录），
