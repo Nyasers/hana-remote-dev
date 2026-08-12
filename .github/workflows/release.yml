@@ -9,7 +9,10 @@
 #
 # 与宿主的差异（必须）:
 #   - 宿主 electron-builder 交叉打包（arm64 runner 出 x64）；我们的 .node 是 node-gyp
-#     本机编译，无法交叉 → macOS 必须真实双 runner（macos-13=x64, macos-latest=arm64）
+#     本机编译，无法交叉 → macOS 仅提供 Apple Silicon（macos-latest 原生 arm64）
+#   - macOS Intel（macos-13 公共 runner 已退役，等不到 runner）不发布原生包：
+#     Intel 用户装 arm64 包时 .node 加载失败 → ssh2 fallback 纯 JS（功能可用、性能略降），
+#     或自行源码编译（npm run package 在 Intel Mac 上产出 x64 .node）
 #   - node-gyp 编译由 npm ci 的 install script 完成（trustedDependencies 已放行）
 #   - verify-native.mjs 魔数校验 fail-closed（防 copy-native 静默 skip → 假加速）
 
@@ -30,8 +33,6 @@ jobs:
             platform: Windows-x64
           - os: ubuntu-latest
             platform: Linux-x64
-          - os: macos-13
-            platform: macOS-x64
           - os: macos-latest
             platform: macOS-arm64
     runs-on: ${{ matrix.os }}
@@ -140,7 +141,7 @@ jobs:
           echo "$ASSETS"
           echo ""
           MISSING=()
-          for P in Windows-x64 Linux-x64 macOS-x64 macOS-arm64; do
+          for P in Windows-x64 Linux-x64 macOS-arm64; do
             Z="hana-remote-dev-${{ github.ref_name }}-$P.zip"
             S="$Z.sha256"
             echo "$ASSETS" | grep -qxF "$Z" || MISSING+=("$Z")
