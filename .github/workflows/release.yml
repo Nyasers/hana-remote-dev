@@ -38,12 +38,12 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: "24.15.0"
+          node-version-file: .nvmrc
           cache: npm
 
       # node-gyp 编译需工具链：Windows（VS Build Tools）/ macOS（Xcode CLT）runner 预装；
@@ -73,13 +73,13 @@ jobs:
             echo "::error::no package zip found in releases/"
             exit 1
           fi
-          SHA="$ZIP.sha256"
           mv "$ZIP" "${ZIP%.zip}-${{ matrix.platform }}.zip"
-          mv "$SHA" "${SHA%.zip}-${{ matrix.platform }}.zip.sha256"
+          # sha256 名基于 ZIP 名构造（不能对 .zip.sha256 做 %.zip 替换，不会命中）
+          mv "$ZIP.sha256" "${ZIP%.zip}-${{ matrix.platform }}.zip.sha256"
           ls -la
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: hrd-${{ matrix.platform }}
           retention-days: 3
@@ -94,12 +94,12 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
 
@@ -142,10 +142,10 @@ jobs:
           echo ""
           MISSING=()
           for P in Windows-x64 Linux-x64 macOS-arm64; do
-            Z="hana-remote-dev-${{ github.ref_name }}-$P.zip"
-            S="$Z.sha256"
-            echo "$ASSETS" | grep -qxF "$Z" || MISSING+=("$Z")
-            echo "$ASSETS" | grep -qxF "$S" || MISSING+=("$S")
+            # 平台后缀匹配（版本段通配 [0-9.]+：tag 名 v0.6.3 带 v 前缀，
+            # 与 manifest version 0.6.3 不一致，不能用 github.ref_name 拼资产名）
+            echo "$ASSETS" | grep -qE "^hana-remote-dev-[0-9.]+-$P\.zip$" || MISSING+=("$P.zip")
+            echo "$ASSETS" | grep -qE "^hana-remote-dev-[0-9.]+-$P\.zip\.sha256$" || MISSING+=("$P.zip.sha256")
           done
           if [ ${#MISSING[@]} -gt 0 ]; then
             echo "::error::Missing required release assets:"
