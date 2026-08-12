@@ -12,15 +12,27 @@
 
 ## 安装
 
-安装包需源码编译（尚未发布预编译产物），需 Node.js 环境：
+从 [Releases](https://github.com/Nyasers/hana-remote-dev/releases/latest) 下载对应平台的安装包（zip 附 .sha256 校验和，建议核对后安装）：
+
+| 平台 | 文件名 |
+|---|---|
+| Windows x64 | `hana-remote-dev-<version>-Windows-x64.zip` |
+| Linux x64 | `hana-remote-dev-<version>-Linux-x64.zip` |
+| macOS（Apple Silicon） | `hana-remote-dev-<version>-macOS-arm64.zip` |
+
+1. 打开 Hana **设置 → 插件**，将 zip 拖入安装区（或点击选择文件），宿主自动校验并安装
+2. 插件声明 `full-access`，首次使用前在插件管理中开启**「允许全权插件」**并刷新
+
+> **macOS Intel 用户**：暂不发布 Intel 原生包。可直接安装 arm64 包（原生加速模块加载失败时自动回退纯 JS 实现，功能完整、性能略降），或按下方「从源码构建」在本机产出 x64 原生包。
+
+### 从源码构建
+
+需 Node.js 24 环境（建议先 `npm ci` 安装依赖，trustedDependencies 已放行 ssh2/cpu-features 原生编译）：
 
 ```bash
 npm install
 npm run package   # 构建 → releases/hana-remote-dev-<version>.zip（附 .sha256）
 ```
-
-1. 打开 Hana **设置 → 插件**，将 zip 拖入安装区（或点击选择文件），宿主自动校验并安装
-2. 插件声明 `full-access`，首次使用前在插件管理中开启**「允许全权插件」**并刷新
 
 ## 使用
 
