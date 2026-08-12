@@ -111,33 +111,28 @@ export async function execute(input, ctx) {
               summary: `会话中断${tail}`,
             });
           }
-          // 自动唤醒（旁路通知）：按 wakeOn 策略过滤结局，消息 = 结局 + 输出尾部。
-          // runtime 引用用 runtimeHolder.current（reload 后旧 ctx 快照指向 disposed
-          // 实例）。bus 来自插件实例 ctx（install 时存入 runtime），工具 ctx 无 bus；
-          // sessionPath 来自工具 ctx（宿主每次调用注入，闭包捕获自工具调用时）。
+          // 自动唤醒：会话结局 → deferred 终态（register 结局时动态决策策略，
+          // 结果随 hana-background-result 直达；busy 排队与补投由宿主托管）。
           const live = runtimeHolder.current;
-          if (live?.wakeOn?.length && live.bus) {
+          if (live?.bus) {
             // 会话日志已由 ssh-client 随运行增量落盘（createSession 时初始化、
-            // close 时 finalize）；此处只取日志路径用于信标（HRD:// 引用）。
+            // close 时 finalize）；此处只取日志路径用于 result 的 HRD:// 引用。
             const sessionLogPath = live.sshClient?.getSessionLogPath?.(info.sessionId) || null;
-            wake.maybeWakeAgent({
-              bus: live.bus,
+            wake.wakeOnSessionEnd({
+              bus: ctx.bus ?? live.bus,
               sessionPath: ctx.sessionPath,
-              wakeOn: live.wakeOn,
+              taskId: info.sessionId,
+              label: input.command,
+              how: info.how,
+              exitCode: info.exitCode ?? null,
+              durationMs: info.durationMs,
+              outputTail: info.outputTail,
+              sessionLogPath,
+              wakeOnExit: typeof input.wakeOnExit === "boolean" ? input.wakeOnExit : undefined,
               log: live.log,
-              info: {
-                sessionId: info.sessionId,
-                command: String(input.command),
-                how: info.how,
-                exitCode: info.exitCode ?? null,
-                durationMs: info.durationMs,
-                outputTail: info.outputTail,
-                sessionLogPath,
-                wakeOnExit: typeof input.wakeOnExit === "boolean" ? input.wakeOnExit : undefined,
-              },
             }).catch(() => {}); // 唤醒失败不打扰 onClose 流程
           } else {
-            live?.log?.info?.(`wake not configured: wakeOn=${JSON.stringify(live?.wakeOn)}`);
+            live?.log?.info?.("wake skipped: bus unavailable");
           }
         },
       });

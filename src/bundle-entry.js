@@ -41,6 +41,7 @@ import * as wake from "./lib/wake.js";
 import { LocalSocketServer } from "./lib/socket-server.js";
 import { runtimeHolder } from "./lib/runtime.js";
 import { resolveAgentName } from "./lib/agent-name.js";
+import { attachCard } from "./lib/card-utils.js";
 
 import registerUiRoutes from "./lib/ui-routes.js";
 import registerApiRoutes from "./lib/api-routes.js";
@@ -73,6 +74,91 @@ function wrapTool(tool) {
       let opId = null;
       // 卡片 {name} 占位符：当前会话的 Agent 显示名（解析失败由渲染层回退 HRD）
       const agentName = resolveAgentName(ctx);
+
+      // ── stream 分支：非阻塞 + 后台执行 + deferred 完成唤醒 ──
+      // 任何远程操作可异步化（grep/find/read/ls/write/edit）：Agent 发起后不阻塞
+      // 回合，完成被宿主唤醒（结果随 hana-background-result 直达），wait 主动兑底。
+      // writeStdin（tty 输入）与 hrd（查询）语义上没有「完成」概念，不参与。
+      if (!selfManaged && tool.name !== "writeStdin" && tool.name !== "hrd" && input?.stream === true) {
+        const sentry = buildHistoryEntry(tool.name, input, started, null, null);
+        const sopId = operations.startOperation({
+          connId: sentry.connId,
+          kind: tool.name,
+          label: sentry.label,
+          agentName,
+        });
+        const sctx = {
+          ...ctx,
+          _hrdAppend: (chunk) => operations.appendOpOutput(sopId, String(chunk ?? "")),
+        };
+        // deferred 注册（发起时；wakeOnExit=false → 只记录不唤醒）
+        wake.registerDeferredWake({
+          bus: ctx.bus ?? runtimeHolder.current?.bus,
+          sessionPath: ctx.sessionPath,
+          taskId: sopId,
+          label: sentry.label,
+          wakeOnExit: typeof input.wakeOnExit === "boolean" ? input.wakeOnExit : undefined,
+          log: runtimeHolder.current?.log,
+        }).catch(() => {});
+        // 后台执行（fire-and-forget）：终局落盘 + deferred 终态 + 释放；
+        // 卡片轮询不受工具返回影响（sopId 先命中 in-flight，落盘后命中磁盘双写）。
+        (async () => {
+          try {
+            const result = await orig(input, sctx);
+            const out = result?.content?.[0]?.text || "";
+            const errLike = TOOL_ERR_TEXT.test(out);
+            const rentry = buildHistoryEntry(tool.name, input, started, result, errLike ? new Error(out.slice(0, 120)) : null);
+            operations.recordHistory({ ...rentry, opRef: sopId, agentName });
+            if (result && typeof result === "object" && sopId) {
+              result.details = {
+                ...(result.details || {}),
+                card: {
+                  route: `/card/op?opId=${sopId}`,
+                  title: rentry.label || tool.name,
+                  description: rentry.summary || rentry.label || tool.name,
+                  aspectRatio: "16:1",
+                },
+              };
+            }
+            wake.resolveDeferredWake({
+              bus: ctx.bus ?? runtimeHolder.current?.bus,
+              taskId: sopId,
+              result: {
+                opId: sopId,
+                tool: tool.name,
+                status: errLike ? "error" : "ok",
+                durationMs: Date.now() - started,
+                label: rentry.label,
+                output: out.slice(0, 4096),
+              },
+              log: runtimeHolder.current?.log,
+            });
+          } catch (err) {
+            operations.recordHistory({
+              ...buildHistoryEntry(tool.name, input, started, null, err),
+              opRef: sopId,
+              agentName,
+            });
+            wake.failDeferredWake({
+              bus: ctx.bus ?? runtimeHolder.current?.bus,
+              taskId: sopId,
+              error: { message: String(err?.message || err).slice(0, 300) },
+              log: runtimeHolder.current?.log,
+            });
+          } finally {
+            operations.endOperation(sopId);
+          }
+        })();
+        // 立即返回：对话主区只显示操作名；卡片从挂载即 running（增量实时推进）
+        return attachCard(
+          {
+            content: [{ type: "text", text: String(sentry.label || tool.name) }],
+            details: { streamOpId: sopId, stream: true },
+          },
+          { opId: sopId, label: sentry.label, summary: "" }
+        );
+      }
+
       if (!selfManaged) {
         const entry = buildHistoryEntry(tool.name, input, started, null, null);
         opId = operations.startOperation({
@@ -222,10 +308,6 @@ export async function install(ctx) {
   };
   ctx._remoteDev = runtime;
   runtimeHolder.current = runtime;
-
-  // 唤醒策略：tty 会话结局触发 agent 自动唤醒（wake.js 过滤 + 发送）。
-  // 固定默认策略（disconnect/lost/killed），不配置化（开发期调试项）。
-  runtime.wakeOn = [...wake.DEFAULT_WAKE_ON];
 
   // 会话日志目录：tty 会话与一次性命令随运行落盘（agent 可经 HRD://sessions/ 读取）
   setSessionLogDir(path.join(logsDir, "session"));

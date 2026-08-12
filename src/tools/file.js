@@ -110,41 +110,89 @@ export async function execute(input, ctx) {
         let rs = null;
         let ws = null;
         let r;
-        try {
-        r = await withOperation(
-            {
-              connId,
-              kind: "copy",
-              label: `Upload ${src.path} → ${input.target}`,
-              agentName,
-              kill: () => {
-                try { rs?.destroy(); } catch { /* ignore */ }
-                try { ws?.destroy(); } catch { /* ignore */ }
-                client.unlink(remotePath).catch(() => {});
-              },
+        const streamMode = input.stream === true;
+        const workCopy = async ({ append } = {}) => {
+          await mkdirpRemote(client, remotePath);
+          rs = fs.createReadStream(src.path);
+          ws = client.createWriteStream(remotePath);
+          // 增量进度：已传字节（stream 模式下进卡片实时输出；阻塞模式无害）
+          rs.on("data", () => append?.(`uploaded ${rs.bytesRead} bytes\n`));
+          await pipeStreams(rs, ws);
+        };
+        const onSuccess = (out) => {
+          if (out?.__killed) {
+            rec("killed", `upload ${src.path} → ${input.target}`, null, connId, out.opId, out.connInstance);
+            return;
+          }
+          const sm = `Uploaded ${src.path} → ${input.target}`;
+          rec("ok", sm, null, connId, out.opId, out.connInstance);
+          // deferred 终态：完成唤醒（默认）或仅记录（wakeOnExit=false）
+          wake.resolveDeferredWake({
+            bus: ctx.bus ?? runtimeHolder.current?.bus,
+            taskId: out.opId,
+            result: {
+              opId: out.opId,
+              tool: "file",
+              status: "ok",
+              durationMs: Date.now() - started,
+              label,
+              output: sm.slice(0, 2048),
             },
-            async () => {
-              await mkdirpRemote(client, remotePath);
-              rs = fs.createReadStream(src.path);
-              ws = client.createWriteStream(remotePath);
-              await pipeStreams(rs, ws);
-            }
+            log: runtimeHolder.current?.log,
+          });
+        };
+        const onError = (err) => {
+          rec("error", String(err?.message || err).slice(0, 300), null, connId, r.opId, r.connInstance);
+          wake.failDeferredWake({
+            bus: ctx.bus ?? runtimeHolder.current?.bus,
+            taskId: r.opId,
+            error: { message: String(err?.message || err).slice(0, 300) },
+            log: runtimeHolder.current?.log,
+          });
+        };
+        r = await withOperation(
+          {
+            connId,
+            kind: "copy",
+            label: `Upload ${src.path} → ${input.target}`,
+            agentName,
+            stream: streamMode,
+            kill: () => {
+              try { rs?.destroy(); } catch { /* ignore */ }
+              try { ws?.destroy(); } catch { /* ignore */ }
+              client.unlink(remotePath).catch(() => {});
+            },
+          },
+          workCopy,
+          {
+            onSuccess,
+            onError,
+            // stream 模式：后台 work 结束后才释放 sftp client（阻塞模式在下方 finally）
+            onFinally: () => client.end().catch(() => {}),
+          }
+        );
+        if (streamMode) {
+          return attachCard(
+            { content: [{ type: "text", text: String(label) }], details: { streamOpId: r.opId, stream: true } },
+            { opId: r.opId, label, summary: "" }
+          );
+        }
+        try {
+          if (r?.__killed) {
+            rec("killed", `upload ${src.path} → ${input.target}`, null, connId, r.opId, r.connInstance);
+            return attachCard(
+              { content: [{ type: "text", text: `Operation killed: upload ${src.path} → ${input.target}` }] },
+              { opId: r.opId, label, summary: "operation killed" }
+            );
+          }
+          rec("ok", `Uploaded ${src.path} → ${input.target}`, null, connId, r.opId, r.connInstance);
+          return attachCard(
+            { content: [{ type: "text", text: `Uploaded ${src.path} → ${input.target}` }] },
+            { opId: r.opId, label, summary: `Uploaded ${src.path} → ${input.target}` }
           );
         } finally {
           client.end();
         }
-        if (r?.__killed) {
-          rec("killed", `upload ${src.path} → ${input.target}`, null, connId, r.opId, r.connInstance);
-          return attachCard(
-            { content: [{ type: "text", text: `Operation killed: upload ${src.path} → ${input.target}` }] },
-            { opId: r.opId, label, summary: "operation killed" }
-          );
-        }
-        rec("ok", `Uploaded ${src.path} → ${input.target}`, null, connId, r.opId, r.connInstance);
-        return attachCard(
-          { content: [{ type: "text", text: `Uploaded ${src.path} → ${input.target}` }] },
-          { opId: r.opId, label, summary: `Uploaded ${src.path} → ${input.target}` }
-        );
       }
 
       if (src.kind === "remote" && dst.kind === "local") {
@@ -153,29 +201,74 @@ export async function execute(input, ctx) {
         let rs = null;
         let ws = null;
         let r;
-        try {
-        r = await withOperation(
-            {
-              connId,
-              kind: "copy",
-              label: `Download ${input.source} → ${dst.path}`,
-              agentName,
-              kill: () => {
-                try { rs?.destroy(); } catch { /* ignore */ }
-                try { ws?.destroy(); } catch { /* ignore */ }
-                fs.promises.unlink(dst.path).catch(() => {});
-              },
+        const streamMode = input.stream === true;
+        const workCopy = async ({ append } = {}) => {
+          await fs.promises.mkdir(path.dirname(dst.path), { recursive: true });
+          rs = client.createReadStream(remotePath);
+          ws = fs.createWriteStream(dst.path);
+          // 增量进度：已传字节（stream 模式下进卡片实时输出；阻塞模式无害）
+          rs.on("data", () => append?.(`downloaded ${rs.bytesRead} bytes\n`));
+          await pipeStreams(rs, ws);
+        };
+        const onSuccess = (out) => {
+          if (out?.__killed) {
+            rec("killed", `download ${input.source} → ${dst.path}`, null, connId, out.opId, out.connInstance);
+            return;
+          }
+          const sm = `Downloaded ${input.source} → ${dst.path}`;
+          rec("ok", sm, null, connId, out.opId, out.connInstance);
+          // deferred 终态：完成唤醒（默认）或仅记录（wakeOnExit=false）
+          wake.resolveDeferredWake({
+            bus: ctx.bus ?? runtimeHolder.current?.bus,
+            taskId: out.opId,
+            result: {
+              opId: out.opId,
+              tool: "file",
+              status: "ok",
+              durationMs: Date.now() - started,
+              label,
+              output: sm.slice(0, 2048),
             },
-            async () => {
-              await fs.promises.mkdir(path.dirname(dst.path), { recursive: true });
-              rs = client.createReadStream(remotePath);
-              ws = fs.createWriteStream(dst.path);
-              await pipeStreams(rs, ws);
-            }
+            log: runtimeHolder.current?.log,
+          });
+        };
+        const onError = (err) => {
+          rec("error", String(err?.message || err).slice(0, 300), null, connId, r.opId, r.connInstance);
+          wake.failDeferredWake({
+            bus: ctx.bus ?? runtimeHolder.current?.bus,
+            taskId: r.opId,
+            error: { message: String(err?.message || err).slice(0, 300) },
+            log: runtimeHolder.current?.log,
+          });
+        };
+        r = await withOperation(
+          {
+            connId,
+            kind: "copy",
+            label: `Download ${input.source} → ${dst.path}`,
+            agentName,
+            stream: streamMode,
+            kill: () => {
+              try { rs?.destroy(); } catch { /* ignore */ }
+              try { ws?.destroy(); } catch { /* ignore */ }
+              fs.promises.unlink(dst.path).catch(() => {});
+            },
+          },
+          workCopy,
+          {
+            onSuccess,
+            onError,
+            // stream 模式：后台 work 结束后才释放 sftp client（阻塞模式在下方 finally）
+            onFinally: () => client.end().catch(() => {}),
+          }
+        );
+        if (streamMode) {
+          return attachCard(
+            { content: [{ type: "text", text: String(label) }], details: { streamOpId: r.opId, stream: true } },
+            { opId: r.opId, label, summary: "" }
           );
-        } finally {
-          client.end();
         }
+        try {
         if (r?.__killed) {
           rec("killed", `download ${input.source} → ${dst.path}`, null, connId, r.opId, r.connInstance);
           return attachCard(
@@ -188,6 +281,9 @@ export async function execute(input, ctx) {
           { content: [{ type: "text", text: `Downloaded ${input.source} → ${dst.path}` }] },
           { opId: r.opId, label, summary: `Downloaded ${input.source} → ${dst.path}` }
         );
+        } finally {
+          client.end();
+        }
       }
 
       // remote → remote
@@ -307,8 +403,11 @@ function requireRuntime(ctx) {
 
 /** Register an in-flight operation for the panel, run the work, always end.
  *  When the kill function fires and the work then settles with an error,
- *  resolves with { __killed: true } so callers can report a clean kill. */
-async function withOperation({ connId, kind, label, kill, agentName }, work) {
+ *  resolves with { __killed: true } so callers can report a clean kill.
+ *  stream=true: 非阻塞后台执行，立即返回 { __stream: true, opId }；
+ *  work 接收 { opId, append }（append 推增量进度）；终局由 hooks 接住：
+ *  onSuccess(out) / onError(err) / onFinally()（client 释放）。 */
+async function withOperation({ connId, kind, label, kill, agentName, stream = false }, work, hooks = {}) {
   const rd = requireRuntime();
   let killed = false;
   // 连接实例 id：在连接存活时取（操作结束自动释放后 instanceOf 会落空），
@@ -329,8 +428,36 @@ async function withOperation({ connId, kind, label, kill, agentName }, work) {
       }
     },
   });
+  if (stream) {
+    // 非阻塞：后台执行（fire-and-forget），终局由 hooks 接住；
+    // 卡片轮询不受工具返回影响（opId 先命中 in-flight，落盘后命中磁盘双写）。
+    (async () => {
+      try {
+        const r = await work({ opId, append: (chunk) => rd.operations.appendOpOutput(opId, String(chunk ?? "")) });
+        // 统一在返回对象上挂 opId：调用处据此注入卡片（work 可能无返回值）
+        const out = r && typeof r === "object" ? r : {};
+        out.opId = opId;
+        out.connInstance = connInstance;
+        if (killed) out.__killed = true;
+        await hooks.onSuccess?.(out);
+      } catch (err) {
+        if (killed) {
+          await hooks.onSuccess?.({ __killed: true, opId, connInstance });
+        } else {
+          await hooks.onError?.(err);
+        }
+      } finally {
+        try {
+          await hooks.onFinally?.();
+        } finally {
+          rd.operations.endOperation(opId);
+        }
+      }
+    })();
+    return { opId, connInstance, __stream: true };
+  }
   try {
-    const r = await work();
+    const r = await work({ opId, append: (chunk) => rd.operations.appendOpOutput(opId, String(chunk ?? "")) });
     // 统一在返回对象上挂 opId：调用处据此注入卡片（work 可能无返回值）
     const out = r && typeof r === "object" ? r : {};
     out.opId = opId;

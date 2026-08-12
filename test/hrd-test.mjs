@@ -32,63 +32,56 @@ const sessionLog = await import(u("lib/session-log.js"));
 const pluginCfg = await import(u("lib/plugin-config.js"));
 const { parseHrdUri, resolveSessionDetail } = await import(u("tools/hrd.js"));
 
-// ---------- normalizeWakeOn ----------
-section("normalizeWakeOn");
+// ---------- deferred 唤醒（宿主原生任务终态投递） ----------
+section("deferred 唤醒（register/resolve/fail）");
 {
-  check("undefined → 默认", JSON.stringify(wake.normalizeWakeOn(undefined)) === JSON.stringify(wake.DEFAULT_WAKE_ON));
-  check("默认策略含 exit（长任务完成唤醒）", wake.DEFAULT_WAKE_ON.includes("exit"));
-  check("数组直通", JSON.stringify(wake.normalizeWakeOn(["exit", "killed"])) === JSON.stringify(["exit", "killed"]));
-  check("逗号字符串拆分", JSON.stringify(wake.normalizeWakeOn("exit,killed")) === JSON.stringify(["exit", "killed"]));
-  check("非法值过滤", JSON.stringify(wake.normalizeWakeOn(["exit", "bogus"])) === JSON.stringify(["exit"]));
-  check("空字符串 → 默认", JSON.stringify(wake.normalizeWakeOn("")) === JSON.stringify(wake.DEFAULT_WAKE_ON));
-  check("重复去重", JSON.stringify(wake.normalizeWakeOn(["exit", "exit"])) === JSON.stringify(["exit"]));
-}
-
-// ---------- maybeWakeAgent ----------
-section("maybeWakeAgent（唤醒裁决与发送）");
-{
-  const bus = { request: async () => ({ ok: true }) };
+  const calls = [];
+  const bus = { request: async (type, payload) => { calls.push({ type, payload }); return { ok: true }; } };
   const log = { info() {}, warn() {} };
-  const base = { bus, log, sessionPath: "/s/x", wakeOn: [...wake.DEFAULT_WAKE_ON] };
-  check("无 sessionPath 跳过", (await wake.maybeWakeAgent({ ...base, sessionPath: "", info: { how: "killed" } })) === "skipped");
-  check("异常结局无条件唤醒", (await wake.maybeWakeAgent({ ...base, info: { how: "killed", durationMs: 100, sessionId: "s1", sessionLogPath: "x" } })) === "ok");
-  check("长任务正常 exit 唤醒（≥3s）", (await wake.maybeWakeAgent({ ...base, info: { how: "exit", durationMs: 4200, sessionId: "s2", sessionLogPath: "x" } })) === "ok");
-  check("瞬时交互不唤醒（<3s）", (await wake.maybeWakeAgent({ ...base, info: { how: "exit", durationMs: 800, sessionId: "s3" } })) === "skipped");
-  // 会话级显式意图优先于全局策略与阈值（参数控制回调，过滤器只兑底）
-  check("wakeOnExit=true 短任务也唤醒（跳过阈值）", (await wake.maybeWakeAgent({ ...base, info: { how: "exit", durationMs: 500, sessionId: "s7", wakeOnExit: true } })) === "ok");
-  check("wakeOnExit=true 覆盖策略（wakeOn 不含 exit 也唤醒）", (await wake.maybeWakeAgent({ ...base, wakeOn: ["killed"], info: { how: "exit", durationMs: 500, sessionId: "s8", wakeOnExit: true } })) === "ok");
-  check("wakeOnExit=false 长任务不唤醒（跳过阈值）", (await wake.maybeWakeAgent({ ...base, info: { how: "exit", durationMs: 42000, sessionId: "s9", wakeOnExit: false } })) === "skipped");
-  check("wakeOnExit=false 只影响 exit，异常结局仍按策略", (await wake.maybeWakeAgent({ ...base, info: { how: "killed", durationMs: 500, sessionId: "s10", wakeOnExit: false } })) === "ok");
-  check("策略不含的结局跳过", (await wake.maybeWakeAgent({ ...base, wakeOn: ["lost"], info: { how: "exit", durationMs: 20000, sessionId: "s4" } })) === "skipped");
-  // busy：宿主流式中，持续重试直到注入成功（回合结束宿主必然空闲）
-  {
-    let n = 0;
-    const busyThenOk = { request: async () => { n += 1; if (n === 1) throw new Error("session_busy"); return { ok: true }; } };
-    const r = await wake.maybeWakeAgent({ ...base, bus: busyThenOk, busyDelayMs: 1, info: { how: "exit", durationMs: 20000, sessionId: "s5", sessionLogPath: "x" } });
-    check("busy 一次后注入成功（不放弃）", r === "ok" && n === 2);
-  }
-  {
-    let n = 0;
-    const allBusy = { request: async () => { n += 1; throw new Error("session_busy"); } };
-    const r = await wake.maybeWakeAgent({ ...base, bus: allBusy, busyDelayMs: 1, busyRetryMax: 3, info: { how: "exit", durationMs: 20000, sessionId: "s6" } });
-    check("持续 busy 到上限后放弃（1 初始 + 3 重试）", r === "busy" && n === 4);
-  }
+
+  check("register 默认 trigger_parent_turn（完成唤醒）",
+    (await wake.registerDeferredWake({ bus, sessionPath: "/s/x", taskId: "op_1", label: "cmd", log })) === true &&
+    calls[0].type === "deferred:register" && calls[0].payload.meta.deliveryIntent === "trigger_parent_turn");
+  check("register 带 notifyAgentOnFailure（失败必唤醒）", calls[0].payload.meta.notifyAgentOnFailure === true);
+  check("register wakeOnExit=false → notify_ui_only（只记录）",
+    (await wake.registerDeferredWake({ bus, sessionPath: "/s/x", taskId: "op_1b", label: "c", wakeOnExit: false, log })) === true &&
+    calls[1].payload.meta.deliveryIntent === "notify_ui_only");
+  check("resolve 携带结构化结果",
+    (await wake.resolveDeferredWake({ bus, taskId: "op_1", result: { status: "ok" }, log })) === true &&
+    calls[2].type === "deferred:resolve" && calls[2].payload.taskId === "op_1");
+  check("fail 携带错误",
+    (await wake.failDeferredWake({ bus, taskId: "op_1", error: { message: "boom" }, log })) === true &&
+    calls[3].type === "deferred:fail");
+  check("缺 sessionPath 跳过 register（不投递）", (await wake.registerDeferredWake({ bus, sessionPath: "", taskId: "op_2", log })) === false);
+  check("缺 bus 跳过（静默）", (await wake.resolveDeferredWake({ bus: null, taskId: "op_3", log })) === false);
 }
 
-// ---------- buildWakeMessage ----------
-section("buildWakeMessage（单行 HRD:// 信标）");
+// ---------- wakeOnSessionEnd（tty 会话结局 → deferred 终态） ----------
+section("wakeOnSessionEnd（tty 结局 → deferred 终态）");
 {
-  const m0 = wake.buildWakeMessage({ sessionId: "mso9pl7u3og", command: "tail -f", how: "exit", exitCode: 0, durationMs: 5000 });
-  check("无记录回退纯标识符", m0.includes("标识符 mso9pl7u3og") && !m0.includes("HRD://"));
-  const m1 = wake.buildWakeMessage({ sessionId: "mso9pl7u3og", command: "tail -f", how: "exit", exitCode: 0, durationMs: 5000, sessionLogPath: "D:/x/logs/session/2026-08-11/mso9pl7u3og.md" });
-  check("有记录时输出 HRD 信标", m1.includes("[Use tool: hana-remote-dev_hrd") && m1.includes("HRD://session/mso9pl7u3og"));
-  const m3 = wake.buildWakeMessage({ sessionId: "mso9pl7u3og", command: "x", how: "exit", exitCode: 1, durationMs: 100, outputTail: "boom", sessionLogPath: "D:/x/a.md" });
-  check("信标为纯文本工具调用标记且 method 显式化", m3.includes('[Use tool: hana-remote-dev_hrd(method="GET", uri="HRD://session/mso9pl7u3og")]'));
-  check("信标含 URI 参数", m3.includes("HRD://session/mso9pl7u3og"));
-  check("信标不含绝对路径", !m3.includes("D:/x") && !m3.includes(".secret"));
-  check("无记录时无 HRD://", !wake.buildWakeMessage({ sessionId: "mso9pl7u3og", command: "x", how: "exit", exitCode: 0, durationMs: 1 }).includes("HRD://"));
-  const m4 = wake.buildWakeMessage({ command: "x", how: "exit", exitCode: 0, durationMs: 1 });
-  check("缺失 sessionId 兜底", m4.length > 0 && !m4.includes("undefined"));
+  const calls = [];
+  const bus = { request: async (type, payload) => { calls.push({ type, payload }); return { ok: true }; } };
+  const log = { info() {}, warn() {} };
+  const base = { bus, log, sessionPath: "/s/x", taskId: "sess_1", label: "top" };
+
+  check("正常 exit 长任务 → resolve（唤醒）",
+    (await wake.wakeOnSessionEnd({ ...base, how: "exit", durationMs: 5000, exitCode: 0, sessionLogPath: "/logs/sess_1.md" })) === true &&
+    calls[0].type === "deferred:register" && calls[0].payload.meta.deliveryIntent === "trigger_parent_turn" &&
+    calls[1].type === "deferred:resolve");
+  check("瞬时 exit（<3s）→ notify_ui_only（只记录不唤醒）",
+    (await wake.wakeOnSessionEnd({ ...base, taskId: "sess_2", how: "exit", durationMs: 800 })) === true &&
+    calls[2].payload.meta.deliveryIntent === "notify_ui_only" && calls[3].type === "deferred:resolve");
+  check("wakeOnExit=false → 只记录",
+    (await wake.wakeOnSessionEnd({ ...base, taskId: "sess_3", how: "exit", durationMs: 5000, wakeOnExit: false })) === true &&
+    calls[4].payload.meta.deliveryIntent === "notify_ui_only");
+  check("wakeOnExit=true 短任务也唤醒",
+    (await wake.wakeOnSessionEnd({ ...base, taskId: "sess_4", how: "exit", durationMs: 500, wakeOnExit: true })) === true &&
+    calls[6].payload.meta.deliveryIntent === "trigger_parent_turn");
+  check("断连 → fail（必唤醒）",
+    (await wake.wakeOnSessionEnd({ ...base, taskId: "sess_5", how: "disconnect", durationMs: 9000 })) === true &&
+    calls[8].type === "deferred:register" && calls[9].type === "deferred:fail");
+  check("会话结局 result 带会话引用与 tool 标识",
+    calls[1].payload.result.session !== null && calls[1].payload.result.tool === "tty_session");
 }
 
 // ---------- parseHrdUri ----------
