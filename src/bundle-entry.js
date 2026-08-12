@@ -255,7 +255,9 @@ function buildHistoryEntry(toolName, input, started, result, err) {
     }
   }
 
-  // summary：结果文本摘要（前 300 字符，压缩空白）或错误信息
+  // summary：仅错误摘要。成功路径的结果文本收进「输出」区（卡片详情折叠区），
+  // 不写进 summary——摘要行只承载错误提示（一眼可见）；description 由调用方
+  // 降级到 label。自管理工具（exec/file）各自保持其短行动摘要语义。
   let summary = "";
   let exitCode = null;
   if (err) {
@@ -264,7 +266,6 @@ function buildHistoryEntry(toolName, input, started, result, err) {
     const text = Array.isArray(result.content)
       ? result.content.map((c) => (c && typeof c.text === "string" ? c.text : "")).join("\n")
       : "";
-    summary = text.replace(/\s+/g, " ").trim().slice(0, 300);
     const m = text.match(/Exit code: (-?\d+)/);
     if (m) exitCode = Number(m[1]);
   }
