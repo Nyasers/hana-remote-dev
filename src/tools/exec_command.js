@@ -438,8 +438,16 @@ export async function execute(input, ctx) {
         parts.push(`\nExit code: ${result.code}`);
         // 卡片不显示输出摘要行：只留命令（op-sub）+ 详情退出码（op-d-row）
         summary = "";
-        // 对话主区只显示跑了什么命令（摘要/输出全部收进卡片详情）
-        contentText = String(input.command || input.connectionId || "exec_command");
+        // Agent 侧需要看到执行结果：content 返回命令 + 完整输出。
+        // 原实现只回传命令回显（输出塞 details，宿主对 Agent 只透传 content 文本），
+        // Agent 自动化拿不到 stdout；这里把命令 + 输出一并回进 content，
+        // 超长时头尾各留 8KB（保留输出开头与 Exit code 结尾），完整内容仍在卡片详情。
+        const cmdText = String(input.command || input.connectionId || "exec_command");
+        const fullOut = parts.join("\n");
+        const MAX = 16384;
+        contentText = fullOut.length > MAX
+          ? `${cmdText}\n\n${fullOut.slice(0, 8192)}\n…（输出 ${fullOut.length} 字符，中间截断，完整内容见卡片）\n${fullOut.slice(-8192)}`
+          : `${cmdText}\n\n${fullOut}`;
       }
       // 完整输出（含结局标注）：卡片详情展示 + 随 result 返回给调用方
       output = parts.join("\n");      return attachCard(
