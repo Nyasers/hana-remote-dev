@@ -242,6 +242,18 @@ function buildHistoryEntry(toolName, input, started, result, err) {
       }
     }
   }
+  // 连接标识统一为 HRD 家族内部 id：alias（端点可读名）解析为 profileId
+  //（HRD_xxx），保证跨工具落盘/卡片/面板一致——exec/file 自管理路径已在
+  // 内部解析，wrapper 兜底路径（grep/write/edit/read/ls/find）这里补同一解析。
+  // 已命中的 HRD id / 查不到的引用（conn_N 旧数据、瞬态实例）保持原样。
+  if (connId) {
+    try {
+      const profile = runtimeHolder.current?.connectionStore?.get(String(connId));
+      if (profile) connId = profile.id;
+    } catch {
+      /* 解析失败保留原始引用（连接日志等仍可读） */
+    }
+  }
 
   // summary：结果文本摘要（前 300 字符，压缩空白）或错误信息
   let summary = "";
