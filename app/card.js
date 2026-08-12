@@ -73,10 +73,10 @@
     }
   }
 
-  // ── Socket.IO 实时通道：订阅 state:changed（operation 变更即刷新）──
+  // ── Socket.IO 实时通道：按 opId 定向订阅（op:changed），state:changed 兑底 ──
   // socket.io 传输层自带 polling 兜底（websocket 不可用自动降级 HTTP 长轮询），
   // 无需手动双通道；仅当 socket-info 不可达（插件无本地 socket）才退手动轮询。
-  // 认证带 role: card（服务端记录，广播策略后续可按角色过滤）。
+  // 认证带 role: card + opId：服务端按房间定向推送（op:<opId> 房间只推本操作）。
   var io = null;
   var socketReady = false;
 
@@ -86,7 +86,7 @@
       .then(function (info) {
         if (!info || !info.ok || !window.__hrdIo || !info.port || !info.token) return false;
         io = window.__hrdIo("http://127.0.0.1:" + info.port, {
-          query: { token: info.token, role: "card" },
+          query: { token: info.token, role: "card", opId: opId },
           transports: ["websocket", "polling"],
           reconnectionAttempts: 8, // 断线有限重试，避免无限挂
           timeout: 5000,
@@ -95,6 +95,12 @@
           socketReady = true;
           refresh(); // 连上即拉一次，补 socket 建立期间的变化
         });
+        // 定向：本卡片关注的操作变化（房间 op:<opId> 只推这条）
+        io.on("op:changed", function (ev) {
+          if (ev && ev.opId && ev.opId !== opId) return;
+          refresh();
+        });
+        // 兑底：open（连接建立初始同步）/ operation 全量广播
         io.on("state:changed", function (ev) {
           if (!ev || (ev.reason && ev.reason !== "operation" && ev.reason !== "open")) return;
           refresh();

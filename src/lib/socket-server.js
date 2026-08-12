@@ -130,9 +130,14 @@ export class LocalSocketServer {
     });
     // In-flight one-shot operations (exec / copy) — the panel sees what the
     // Agent is doing right now and can stop it.
-    this._unsubOperations = onOperationChange(() => {
+    // 定向推送：关心该 opId 的卡片（join op:<opId> 房间）收 op:changed，
+    // 面板（role:panel 房间）收全量 state:changed 刷新列表。互不干扰。
+    this._unsubOperations = onOperationChange((opId) => {
       try {
-        io.emit("state:changed", { reason: "operation" });
+        if (opId) {
+          io.to("op:" + opId).emit("op:changed", { opId });
+        }
+        io.to("role:panel").emit("state:changed", { reason: "operation", opId: opId || null });
       } catch {
         // broadcasting must never break the registry
       }
@@ -147,8 +152,15 @@ export class LocalSocketServer {
     const H = this._handlers;
 
     io.on("connection", (socket) => {
-      // 连接角色（panel / card）：广播策略后续可按角色过滤
-      socket.data.role = socket.handshake?.query?.role || "panel";
+      // 连接角色（panel / card）+ 关注的操作（card 专属）：按房间定向推送
+      // - role:<role> 房间：广播策略按角色过滤
+      // - op:<opId> 房间：卡片只收自己那条操作的变化（op:changed 定向事件）
+      const q = socket.handshake?.query || {};
+      const role = q.role || "panel";
+      socket.data.role = role;
+      socket.data.opId = q.opId || null;
+      socket.join("role:" + role);
+      if (socket.data.opId) socket.join("op:" + socket.data.opId);
       // Initial sync: tell the fresh panel to pull the list once.
       socket.emit("state:changed", { reason: "open" });
 

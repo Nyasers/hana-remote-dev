@@ -178,7 +178,7 @@ export function recordHistory(entry) {
   };
   appendOpLogLine(opLogLine(entry));
   persistRecord(record);
-  notifyChange();
+  notifyChange(id);
   return id;
 }
 
@@ -207,7 +207,7 @@ export function updateHistory(id, patch) {
     exitCode: rec.exitCode,
   }));
   persistRecord(rec); // 结局回写同步到磁盘（旧 tty 卡片读到终局而非启动态）
-  notifyChange();
+  notifyChange(id);
   return true;
 }
 
@@ -263,10 +263,11 @@ export function onOperationChange(fn) {
   return () => listeners.delete(fn);
 }
 
-function notifyChange() {
+/** 通知订阅者：操作状态变化（opId 可空——连接池/会话等非操作变更不带） */
+function notifyChange(opId) {
   for (const fn of [...listeners]) {
     try {
-      fn();
+      fn(opId || null);
     } catch {
       // a listener must never break the registry
     }
@@ -279,7 +280,7 @@ function scheduleChangeNotify() {
   if (changeNotifyTimer) return;
   changeNotifyTimer = setTimeout(() => {
     changeNotifyTimer = null;
-    notifyChange();
+    notifyChange(opId);
   }, 250);
 }
 export function appendOpOutput(opId, chunk) {
@@ -354,7 +355,7 @@ export function startOperation({ connId, connInstance, kind, label, agentName, k
     kill: typeof kill === "function" ? kill : null,
     startedAt: new Date(),
   });
-  notifyChange();
+  notifyChange(opId);
   return opId;
 }
 
@@ -362,7 +363,7 @@ export function startOperation({ connId, connInstance, kind, label, agentName, k
 export function endOperation(opId) {
   if (!opId || !operations.has(opId)) return false;
   operations.delete(opId);
-  notifyChange();
+  notifyChange(opId);
   return true;
 }
 
@@ -381,7 +382,7 @@ export function killOperation(opId) {
     // a throwing kill handler must not break the panel's RPC; the op is
     // still removed once the work settles
   }
-  notifyChange();
+  notifyChange(opId);
   return true;
 }
 
