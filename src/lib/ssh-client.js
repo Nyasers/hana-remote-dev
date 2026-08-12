@@ -334,7 +334,7 @@ export function exec(connId, command, opts = {}) {
   entry.busy = (entry.busy || 0) + 1;
   return execInner(connId, command, opts).finally(() => {
     entry.busy = Math.max(0, (entry.busy || 1) - 1);
-    releaseIfIdle(connId); // 事件驱动：exec 结束即尝试释放（busy 归零 + 无会话 + 非 manual）
+    releaseIfIdle(connId); // 事件驱动：exec 结束即尝试释放（busy 归零 + 无会话）
   });
 }
 
@@ -712,7 +712,7 @@ export function listConnections() {
     port: entry.config.port,
     username: entry.config.username,
     connectedAt: entry.connectedAt,
-    source: entry.config.source || "manual",
+    source: entry.config.source || "auto",
   }));
 }
 
@@ -821,7 +821,6 @@ export function releaseIfIdle(connId) {
   if (!entry) return false;
   if ((entry.busy || 0) > 0) return false; // 并发工作（并行 exec/sftp 组）仍在进行：最后一个完成者负责释放
   if ([...sessions.values()].some((s) => s.connId === connId && !s.closed)) return false; // tty 会话仍活动
-  if (entry.config.source === "manual") return false; // 手动连接不自动释放
   disconnect(connId, { manual: false });
   return true;
 }
@@ -1199,7 +1198,7 @@ export function listSessions(connId) {
 
 let idleTimer = null;
 let idleTimeoutMs = 300 * 1000; // 兜底 TTL（默认 300s，bundle-entry 按配置显式设置）：异常残留连接才轮到它
-const manualIdleTimeoutMs = 600 * 1000; // 手动预连接保留 600s（显式意图，面板已无入口，防御性保留）
+const ttyIdleTimeoutMs = 600 * 1000; // tty 会话长驻兜底阈值（固定 600s，不随 exec 短 TTL 被杀）
 
 /** Set the idle timeout (seconds) for auto connections. */
 export function setIdleTimeout(seconds) {
@@ -1212,8 +1211,8 @@ export function startIdleManager() {
   idleTimer = setInterval(() => {
     const now = Date.now();
     for (const sess of sessions.values()) {
-      // tty 会话长驻：空闲阈值用 manual（600s），不随 exec 短 TTL 被杀
-      if (!sess.closed && now - sess.lastActivityAt > manualIdleTimeoutMs) {
+      // tty 会话长驻：空闲阈值固定 600s，不随 exec 短 TTL 被杀
+      if (!sess.closed && now - sess.lastActivityAt > ttyIdleTimeoutMs) {
         try {
           sess.stream.close();
         } catch {
@@ -1225,7 +1224,8 @@ export function startIdleManager() {
       const hasSessions = [...sessions.values()].some((s) => s.connId === id && !s.closed);
       // 有会话或有进行中的工作（busy）的连接永不回收
       if (hasSessions || (entry.busy || 0) > 0) continue;
-      const limit = entry.config.source === "manual" ? manualIdleTimeoutMs : idleTimeoutMs;
+      // 连接全自动：统一用 idleTimeoutMs（手动预连接已无入口，回收语义不分裂）
+      const limit = idleTimeoutMs;
       if (now - (entry.lastUsedAt || 0) > limit) {
         // idle 自动回收：不打手动标记（见 disconnect 的 manual 参数）
         disconnect(id, { manual: false });

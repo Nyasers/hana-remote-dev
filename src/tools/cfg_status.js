@@ -71,7 +71,7 @@ export async function execute(input, ctx) {
       `连接 ${handleOf(conn, ctx)}: ${healthy ? "● healthy" : "○ disconnected"}`,
       `  ${conn.username}@${conn.host}:${conn.port}`,
       `  建立: ${conn.connectedAt.toISOString()}`,
-      `  来源: ${conn.source === "auto" ? "自动建连" : "手动预连接"}`,
+      `  来源: 自动建连`,
       `Sessions (${sessions.length}): ${sessions.length ? sessions.map((s) => `${s.sessionId} "${s.command}"`).join("; ") : "(none)"}`,
       `Operations (${ops.length}): ${ops.length ? ops.map((o) => `${o.opId}[${o.kind}] ${o.label}${o.killable ? "" : " (not killable)"}`).join("; ") : "(none)"}`,
     ];

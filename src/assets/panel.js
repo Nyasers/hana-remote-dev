@@ -531,13 +531,13 @@ function openLogCfgModal() {
           el("input", { type: "number", min: "0", step: "1", id: "logcfg-maxtotal", class: "field-input" }),
         ]),
       ]),
-      el("small", { class: "field-hint" }, ["0 = 不设限。超限时归档最旧日期组为 tar.gz（可解压还原）。"]),
+      el("small", { class: "field-hint" }, ["0 = 不设限。时间归档为主：昨日自动打包 tar.gz（按天不可变、可解压还原）；空间限制仅兜底异常——单文件超限截断、目录超限归档最旧。"]),
       el("p", { class: "logcfg-section" }, ["连接"]),
       el("div", { class: "field" }, [
         el("span", {}, ["空闲回收 (秒)"]),
         el("input", { type: "number", min: "1", step: "1", id: "logcfg-idle", class: "field-input" }),
       ]),
-      el("small", { class: "field-hint" }, ["兜底回收：异常残留连接空闲超过该秒数自动断开（exec/sftp 结束、tty 会话关闭已即时释放；手动连接固定 600s）。"]),
+      el("small", { class: "field-hint" }, ["兜底回收：异常残留连接空闲超过该秒数自动断开（exec/sftp 结束、tty 会话关闭已即时释放；长驻 tty 会话固定 600s 回收）。"]),
       el("div", { class: "modal-footer" }, [
         el("button", { class: "btn ghost", type: "button", onclick: () => closeModal() }, ["取消"]),
         el("button", { class: "btn primary", type: "button", onclick: () => submitLogCfg() }, ["保存"]),
@@ -861,7 +861,7 @@ function renderDetail(detail, profile, sessions, operations, history) {
         el("span", { class: "conn-title", title: `${isSess ? "会话连接" : "连接"} · ${conn.instanceId || conn.id}` }, [shortName]),
         el("button", { class: "btn ghost sm", type: "button", title: "强制释放该连接（终止其上活动会话）", onclick: () => disconnectProfile(profile, conn) }, ["断开"]),
         el("span", { class: "conn-meta", title: fullTs }, [
-          `${conn.source === "auto" ? "自动建连" : "手动预连接"} · ${tsShort(conn.connectedAt)}`,
+          `自动建连 · ${tsShort(conn.connectedAt)}`,
         ])
       );
     } else {
