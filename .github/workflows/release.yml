@@ -1,10 +1,10 @@
-# Release — 四平台构建 + 单点发布（对齐宿主 openhanako build.yml 的设计）
+# Release — 三平台构建 + 单点发布（对齐宿主 openhanako build.yml 的设计）
 # 触发: push tag v*（version.mjs 打 tag 后自动触发）或手动 workflow_dispatch
 #
 # 关键设计（借鉴宿主）:
-#   - matrix include + fail-fast: false（四平台互不拖累）
+#   - matrix include + fail-fast: false（三平台互不拖累）
 #   - release job 单点控制: draft release 创建、上传、资产核验都在这一个 job（防并发覆盖）
-#   - Verify release assets 硬约束: 四平台 zip + sha256 缺一 CI fail（防 shell 写漏/构建挂）
+#   - Verify release assets 硬约束: 三平台 zip + sha256 缺一 CI fail（防 shell 写漏/构建挂）
 #   - 平台限定文件名: hana-remote-dev-<ver>-<platform>.zip（防同名不同内容互相覆盖）
 #
 # 与宿主的差异（必须）:
@@ -118,7 +118,7 @@ jobs:
               --generate-notes
           fi
 
-      # 单点上传四平台 zip + sha256（--clobber 幂等重传）
+      # 单点上传三平台 zip + sha256（--clobber 幂等重传）
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -130,7 +130,7 @@ jobs:
               gh release upload "${{ github.ref_name }}" "$f" --clobber
             done
 
-      # 硬约束：四平台 zip + sha256 必须齐全，缺一个 CI fail（draft 留给人手动检查）
+      # 硬约束：三平台 zip + sha256 必须齐全，缺一个 CI fail（draft 留给人手动检查）
       - name: Verify release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
