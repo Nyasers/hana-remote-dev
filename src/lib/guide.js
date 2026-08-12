@@ -85,7 +85,7 @@ tty / stream 结束时，宿主 **deferred 自动投递**终局结果（\`<hana-
 | \`logs/events/<yyyy-mm-dd>.jsonl\` | 统一事件流：操作（type=op，含 opId/sessionId/status/耗时）、连接（connection:*）、配置（config:*）一行一事件，v/ts 版本字段，append-only；保留 30 天 |
 | \`logs/session/<yyyy-mm-dd>/<id>.md\` | 会话回放（tty 交互与一次性 exec 同构模板，增量落盘 append-only；id 前 8~9 位 base36 为毫秒时间戳，O(1) 定位；exec 头部记 opId 与操作事件互引） |
 | \`logs/session/<yyyy-mm-dd>.tar.gz\` | 昨日归档：跨天后首次活动/初始化时，昨天及更早日期目录就地打包（不解压可列 listTarGz、按名提取 extractTarGz；历史会话经 HRD://session-read/<id> 读取） |
-| 旧目录 \`connection/ config/ operations/ ops/ archive/\` | 存量兼容：新写入已迁移至 events/ 与 session/ 内，旧文件随清理自然消亡 |
+| 旧目录 \`connection/ config/ operations/ ops/ archive/\` | 存量兼容：新写入已迁移至 events/ 与 session/ 内；旧目录留存不迁移，需要时手动删除 |
 
 ## TROUBLESHOOT
 排查对照：错误 → 处理。
