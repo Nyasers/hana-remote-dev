@@ -170,6 +170,7 @@ export async function execute(input, ctx) {
       summary = `interactive session ${sessionId}`;
       ttyHistId = rd.operations.recordHistory({
         tool: "exec_command",
+        kind: "tty",
         label: input.command,
         connId,
         connInstance,

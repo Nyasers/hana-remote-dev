@@ -18,10 +18,12 @@ import { readOperation } from "./operations.js";
 const APP_DIR = path.join(__dirname, "..", "app");
 
 // ---- 工具 → 宿主 tool 段 key 映射 ----
-// 同名直用（ls/read/write/edit/find/grep）；exec_command/write_stdin 属终端类
-// （宿主 terminal）；file 借用宿主 truncate 的整理语义（宿主无 copy 文案）。
+// 同名直用（ls/read/write/edit/find/grep）；exec_command 按操作形态分流：
+// tty（kind="tty"，交互式终端）→ 宿主 terminal；非 tty（一次性命令）→
+// 宿主 bash（宿主标准 shell 工具，无 tty 标记的历史记录兜底同 bash）。
+// write_stdin 属 tty 输入 → terminal；file 借用宿主 truncate 的整理语义。
 const TOOL_KEY = {
-  exec_command: "terminal",
+  exec_command: (kind) => (kind === "tty" ? "terminal" : "bash"),
   write_stdin: "terminal",
   file: "truncate",
 };
@@ -35,6 +37,7 @@ const FALLBACK_I18N = {
   find: { emoji: "🔍", running: "{name} 正在找文件", done: "{name} 找到了", failed: "{name} 翻遍了也没找到" },
   grep: { emoji: "🔍", running: "{name} 正在文件里翻找", done: "{name} 翻到了", failed: "{name} 翻了个遍，没有" },
   file: { emoji: "✂️", running: "{name} 正在整理文件", done: "{name} 整理好了", failed: "{name} 整理不动了" },
+  bash: { emoji: "💻", running: "{name} 正在执行命令", done: "{name} 命令执行完毕", failed: "{name} 命令执行失败" },
   terminal: { emoji: "💻", running: "{name} 正在敲命令", done: "敲完了", failed: "命令执行失败" },
 };
 const FALLBACK_FALLBACK = { emoji: "🔧", running: "{name} 正在忙碌中…", done: "{name} 忙完了", failed: "{name} 没忙明白" };
@@ -111,10 +114,12 @@ function splitEmoji(text) {
   return { emoji: m[1], text: s.slice(m[1].length) };
 }
 
-/** 取某工具的三态文案（宿主优先，离线兜底），返回 { emoji, running, done, failed }。 */
-function entryFor(tool, ctx) {
+/** 取某工具的三态文案（宿主优先，离线兜底），返回 { emoji, running, done, failed }。
+ *  kind 供 exec_command 分流（tty → terminal，非 tty/无标记 → bash）。 */
+function entryFor(tool, ctx, kind) {
   const cache = loadHostToolI18n(ctx);
-  const key = TOOL_KEY[tool] || tool;
+  const mapped = TOOL_KEY[tool];
+  const key = typeof mapped === "function" ? mapped(kind) : mapped || tool;
   const raw = (cache.tools && (cache.tools[key] || cache.fallback)) || null;
   if (raw && typeof raw === "object") {
     const r = splitEmoji(raw.running);
@@ -129,8 +134,8 @@ function entryFor(tool, ctx) {
 }
 
 /** 状态文案：{name} → Agent 名（取不到回退 HRD）。 */
-function textFor(tool, state, agentName, ctx) {
-  const t = entryFor(tool, ctx);
+function textFor(tool, state, agentName, ctx, kind) {
+  const t = entryFor(tool, ctx, kind);
   const name = agentName || "HRD";
   return { emoji: t.emoji, text: (t[state] || t.done || "").replaceAll("{name}", name).trim() };
 }
@@ -186,7 +191,7 @@ ${hcLink}
     const snap = readOperation(opId);
     if (!snap) return c.json({ ok: false, error: "操作记录不存在" }, 404);
     const state = snap.status === "running" ? "running" : snap.status === "ok" ? "done" : "failed";
-    const t = textFor(snap.tool, state, snap.agentName, ctx);
+    const t = textFor(snap.tool, state, snap.agentName, ctx, snap.kind);
     return c.json({
       ok: true,
       op: {
