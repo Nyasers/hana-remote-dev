@@ -21,27 +21,82 @@ Hana 远程开发插件（SSH 连接 / 远程 exec / 文件 / 卡片渲染）。
 
 ## 发布流程（日常发版）
 
-详见 README「开发 → 发布流程」。速查：
+> 以下为完整可执行步骤，Agent 直接照此执行，不需要查 README。
 
-```bash
-git status --short          # 0. 工作区必须干净（version.mjs 强制）
-npm test                    # 1. 回归
-npm run build               # 2. 构建
-npm run version -- patch    # 3. bump + package + commit + tag
-git push origin master      # 4. 主分支
-git push origin vX.Y.Z      # 5. 显式单 tag（bulk --tags 被安全策略拦截）
-gh run watch <run-id> --repo Nyasers/hana-remote-dev --exit-status   # 6. CI 三平台
-gh release download vX.Y.Z --repo Nyasers/hana-remote-dev --pattern "hana-remote-dev-*-Windows-x64.zip*" --clobber  # 7. 下载 win 资产
-# 8. SHA256 校验 → stage 交付
+### 0. 前置：工作区必须干净
+
+```powershell
+cd E:\Hanako\workspace\Projects\hana-remote-dev
+git status --short
 ```
 
-硬约束：
+- 有未提交改动：先 commit 源码改动（`npm run version` 的 version.mjs 会强制校验，脏工作区直接拒绝执行）。
+- 已发布版本的 tag 若与代码不匹配（如改了源码想补发）需先确认是否走新版本号，不要回退版本。
 
-- 宿主安装 zip 后必须**重载插件或重启宿主**（文件覆盖 ≠ 实例重载，否则跑的仍是内存旧 bundle）
-- 命令中不得内联凭据（curl -u / export TOKEN）；删除连接配置必须先向用户确认
-- 版本单一事实源 = package.json；版本号只能向上，不能回退
-- 正式安装资产一律走 CI release（zip 与本地 dist 有行尾符/注释字节差异，代码一致）
-- CI action 保持 node24 运行时（upload-artifact@v6 / download-artifact@v8），避免 GitHub 强制迁移告警
+### 1. 回归 + 构建
+
+```powershell
+fnm env --use-on-cd 2>&1 | Out-String | Invoke-Expression   # 项目需要 node 24
+npm test              # 65 例单测；失败先修，不跳过
+npm run build         # Rspack → dist/（terser 压缩，dist/ 不入库）
+```
+
+### 2. bump 版本（自动 package + commit + tag）
+
+```powershell
+npm run version -- patch    # 或 minor；patch 用于修 bug，minor 用于功能
+```
+
+- 自动完成：版本号 bump（单一事实源 = package.json）→ 打包 zip + sha256 到 releases/ → commit + tag vX.Y.Z。
+- 确认输出中的新版本号与 tag 名。
+
+### 3. 推送（两步，顺序固定）
+
+```powershell
+git push origin master      # 先主分支
+git push origin vX.Y.Z      # 再显式单 tag 推送
+```
+
+- tag 必须单独推：bulk `--tags` 会被 GitHub 安全策略拦截。
+- tag 推送触发 CI 多平台构建（release workflow，tag 触发）。
+
+### 4. 等 CI + 下载资产
+
+```powershell
+$run = gh run list --repo Nyasers/hana-remote-dev --limit 1 --json databaseId -q ".[0].databaseId"
+gh run watch $run --repo Nyasers/hana-remote-dev --exit-status
+```
+
+- 排队等托管 runner 是正常现象（queued → in_progress 后约 3-5 分钟完成）。
+- 失败：`gh run view <run-id> --repo Nyasers/hana-remote-dev --log` 查日志；修复后重新 `git push origin vX.Y.Z`（先删远端 tag 或直接重推）。
+
+```powershell
+cd releases
+gh release download vX.Y.Z --repo Nyasers/hana-remote-dev --pattern "hana-remote-dev-*-Windows-x64.zip*" --clobber
+```
+
+### 5. 校验 + 交付
+
+```powershell
+$expected = (Get-Content hana-remote-dev-<ver>-Windows-x64.zip.sha256 -Raw).Trim().Split(" ")[0]
+$actual = (Get-FileHash hana-remote-dev-<ver>-Windows-x64.zip -Algorithm SHA256).Hash
+# expected -eq actual 通过后：
+stage_files → zip 交付给姐姐
+```
+
+- 正式安装资产一律走 CI release（zip 与本地 dist 有行尾符/注释字节差异，代码一致）。
+- 交付时明确提醒：**宿主安装 zip 后必须重载插件或重启宿主**（文件覆盖 ≠ 插件实例重载，否则运行的仍是内存旧 bundle）。
+
+### 6. 收尾
+
+- 全工具回归（对已保存连接跑一遍 9 工具 + 错误分支，核对：connId 全 HRD id、成功 summary 空、output 有内容、op_/h_ 双写成对一致）。
+- 更新版本轨迹记忆与 SPECS.md 归档（SDD：验收后 evidence.md 落盘 + SPECS.md Active 归档）。
+
+### 硬约束
+
+- 命令中不得内联凭据（curl -u / export TOKEN）；删除连接配置必须先向用户确认。
+- 版本号只能向上，不能回退；版本单一事实源 = package.json。
+- CI action 保持 node24 运行时（upload-artifact@v6 / download-artifact@v8），避免 GitHub 强制迁移告警。
 
 ## 排障速记
 
