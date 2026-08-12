@@ -109,6 +109,75 @@ async function sendWake({ bus, sessionPath, text, log }) {
   }
 }
 
+// ---- deferred 任务终态（stream 操作）→ 宿主投递 hana-background-result ----
+// 宿主原生 deferred 机制：register（任务登记 + 投递策略）→ resolve/fail（终态）
+// → 宿主投递 <hana-background-result> 给 Agent 会话，完成即唤醒回合（默认）。
+// 相比 tty 信标（session:send 注入文本，Agent 醒来后二次查询），deferred 把结果
+// 随消息直接送达，Agent 醒来即拿到结构化 result——卡片完成本身就是唤醒钩子。
+// 容错纪律：任何失败只记录不抛回（终局落盘流程不受影响）。
+
+/**
+ * 注册 deferred 占位（stream 操作发起时调用，须先于 resolve/fail）。
+ * wakeOnExit=false → notify_ui_only（只记录不唤醒）；否则 trigger_parent_turn
+ * （宿主默认即唤醒，显式声明意图）；失败 notifyAgentOnFailure=true 必唤醒。
+ * @returns {Promise<boolean>}
+ */
+export async function registerDeferredWake({ bus, sessionPath, taskId, label, wakeOnExit, log }) {
+  if (!bus?.request || !sessionPath || !taskId) {
+    log?.info?.(`deferred register skipped: bus=${bus?.request ? "ok" : "MISSING"}, sessionPath=${sessionPath ? "set" : "EMPTY"}`);
+    return false;
+  }
+  try {
+    await bus.request("deferred:register", {
+      taskId,
+      sessionPath,
+      meta: {
+        type: "hrd-op",
+        label: String(label || ""),
+        deliveryIntent: wakeOnExit === false ? "notify_ui_only" : "trigger_parent_turn",
+        notifyAgentOnFailure: true,
+      },
+    });
+    log?.info?.(`deferred registered: ${taskId} (deliveryIntent=${wakeOnExit === false ? "notify_ui_only" : "trigger_parent_turn"})`);
+    return true;
+  } catch (err) {
+    log?.warn?.(`deferred register failed: ${String(err?.message || err)}`);
+    return false;
+  }
+}
+
+/**
+ * 终态成功：resolve 携带结构化结果（宿主按 deliveryIntent 决定唤醒/只记录）。
+ * @returns {Promise<boolean>}
+ */
+export async function resolveDeferredWake({ bus, taskId, result, log }) {
+  if (!bus?.request || !taskId) return false;
+  try {
+    await bus.request("deferred:resolve", { taskId, result });
+    log?.info?.(`deferred resolved: ${taskId}`);
+    return true;
+  } catch (err) {
+    log?.warn?.(`deferred resolve failed: ${String(err?.message || err)}`);
+    return false;
+  }
+}
+
+/**
+ * 终态失败：notifyAgentOnFailure=true 时宿主唤醒 Agent 处理（重试/换源决策）。
+ * @returns {Promise<boolean>}
+ */
+export async function failDeferredWake({ bus, taskId, error, log }) {
+  if (!bus?.request || !taskId) return false;
+  try {
+    await bus.request("deferred:fail", { taskId, error });
+    log?.info?.(`deferred failed: ${taskId}`);
+    return true;
+  } catch (err) {
+    log?.warn?.(`deferred fail failed: ${String(err?.message || err)}`);
+    return false;
+  }
+}
+
 /**
  * 唤醒入口：按 wakeOn 策略过滤结局 → 发送 → session_busy 静默重试一次。
  * 全程吞错（返回值仅用于可观测性，调用方无需处理）。

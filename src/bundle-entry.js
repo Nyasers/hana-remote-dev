@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import * as execCommand from "./tools/exec_command.js";
+import * as waitTool from "./tools/wait.js";
 import * as fileTool from "./tools/file.js";
 import * as findTool from "./tools/find.js";
 import * as grepTool from "./tools/grep.js";
@@ -24,7 +25,6 @@ import {
   setIdleTimeout,
   setSessionLogDir,
   setEventLogDir,
-  setOperationLogDir,
   setSessionLogMaxBytes,
   setSessionLogMaxTotalBytes,
   startIdleManager,
@@ -40,6 +40,7 @@ import * as sessionLog from "./lib/session-log.js";
 import * as wake from "./lib/wake.js";
 import { LocalSocketServer } from "./lib/socket-server.js";
 import { runtimeHolder } from "./lib/runtime.js";
+import { resolveAgentName } from "./lib/agent-name.js";
 
 import registerUiRoutes from "./lib/ui-routes.js";
 import registerApiRoutes from "./lib/api-routes.js";
@@ -70,15 +71,25 @@ function wrapTool(tool) {
     async execute(input, ctx) {
       const started = Date.now();
       let opId = null;
+      // 卡片 {name} 占位符：当前会话的 Agent 显示名（解析失败由渲染层回退 HRD）
+      const agentName = resolveAgentName(ctx);
       if (!selfManaged) {
+        const entry = buildHistoryEntry(tool.name, input, started, null, null);
         opId = operations.startOperation({
-          connId: buildHistoryEntry(tool.name, input, started, null, null).connId,
+          connId: entry.connId,
           kind: tool.name,
-          label: buildHistoryEntry(tool.name, input, started, null, null).label,
+          label: entry.label,
+          agentName,
         });
       }
+      // 增量通道：工具执行中可调 ctx._hrdAppend(chunk) 推实时输出
+      // （grep/find 等 walk 型工具逐步推命中；面板进行中操作实时可见）。
+      // 快工具（ls 等一次往返无中间流）不调用，running 态自然一闪而过。
+      const tctx = opId
+        ? { ...ctx, _hrdAppend: (chunk) => operations.appendOpOutput(opId, String(chunk ?? "")) }
+        : ctx;
       try {
-        const result = await orig(input, ctx);
+        const result = await orig(input, tctx);
         // SELF_MANAGED 工具（exec_command/file）在工具内部自行记录历史
         // （带 connInstance 等语义字段）；wrapper 只兜底非自管理工具，
         // 否则同一次执行会双记录、双卡（null 批次 + 实例批次）。
@@ -86,7 +97,7 @@ function wrapTool(tool) {
           const out = result?.content?.[0]?.text || "";
           const errLike = TOOL_ERR_TEXT.test(out);
           const entry = buildHistoryEntry(tool.name, input, started, result, errLike ? new Error(out.slice(0, 120)) : null);
-          operations.recordHistory({ ...entry, opRef: opId });
+          operations.recordHistory({ ...entry, opRef: opId, agentName });
           // 操作卡片：插件工具在宿主 UI 只有 _fallback 兜底（"🔧 忙碌中…"），
           // 卡片补足操作详情（目标 / 状态 / 耗时 / 摘要），随 details.card 渲染在工具块下方。
           if (result && typeof result === "object" && opId) {
@@ -103,7 +114,7 @@ function wrapTool(tool) {
         }
         return result;
       } catch (err) {
-        if (!selfManaged) operations.recordHistory(buildHistoryEntry(tool.name, input, started, null, err));
+        if (!selfManaged) operations.recordHistory({ ...buildHistoryEntry(tool.name, input, started, null, err), agentName });
         throw err;
       } finally {
         if (opId) operations.endOperation(opId);
@@ -177,7 +188,7 @@ function buildHistoryEntry(toolName, input, started, result, err) {
 // wrapper 跳过避免双记录。
 export const hrdTools = [
   hrdTool,
-  ...[execCommand, fileTool, findTool, grepTool, lsTool, readTool, writeTool, editTool, writeStdin].map(wrapTool),
+  ...[execCommand, waitTool, fileTool, findTool, grepTool, lsTool, readTool, writeTool, editTool, writeStdin].map(wrapTool),
 ];
 
 // ---- 生命周期（原 onload 体；返回 dispose） ----

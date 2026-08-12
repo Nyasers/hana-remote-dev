@@ -9,10 +9,33 @@ body {
   padding: 2px 8px;
   min-height: 0;
 }
-/* 深色主题回退：宿主未注入主题变量时，深色界面下不能沿用深色文字 fallback */
-body[data-hana-theme="dark"],
-body[data-hana-theme="midnight"],
+/* 深色主题回退：宿主未注入主题变量时（极端兜底），数值与对应宿主主题一致；
+   宿主注入成功时这些值 = 当前主题真实值，body 级覆盖无害 */
+body[data-hana-theme="midnight"] {
+  --text: #E1EAF0;
+  --text-light: #B7C5CE;
+  --text-muted: #A3B5C0;
+  --bg-card: #445560;
+  --border: rgba(170, 121, 141, 0.16);
+  --green: #8CC790;
+  --danger: #C77070;
+  --accent: #C99AAF;
+  --link: #B9E2FF;
+  color: var(--text, #c8c8c8);
+}
 body[data-hana-theme="midnight-contrast"] {
+  --text: #F0F6FA;
+  --text-light: #D3E0E8;
+  --text-muted: #B7C8D3;
+  --bg-card: #30414B;
+  --border: rgba(230, 177, 196, 0.26);
+  --green: #A8DDAA;
+  --danger: #E28B8B;
+  --accent: #E6B1C4;
+  --link: #B9E2FF;
+  color: var(--text, #c8c8c8);
+}
+body[data-hana-theme="dark"] {
   color: var(--text, #c8c8c8);
 }
 @media (prefers-color-scheme: dark) {
@@ -51,7 +74,7 @@ body[data-hana-theme="midnight-contrast"] {
 .op-sub {
   margin-top: 1px;
   font-size: 12px;
-  color: var(--text-dim, #6b6f73);
+  color: var(--text-light, #6b6f73);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -63,16 +86,21 @@ body[data-hana-theme="midnight-contrast"] {
   padding: 1px 8px;
   border-radius: 999px;
   background: var(--bg-card, rgba(83, 125, 150, 0.08));
-  color: var(--text-dim, #6b6f73);
+  color: var(--text-light, #6b6f73);
   white-space: nowrap;
 }
 .op-badge.ok { color: var(--green, #7bae7f); background: rgba(123, 174, 127, 0.12); }
 .op-badge.fail { color: var(--danger, #8b3a3a); background: rgba(139, 58, 58, 0.1); }
+.op-badge.run { color: var(--link, var(--accent, #5b8fd9)); background: rgba(91, 143, 217, 0.12); }
+/* 徽标底色跟随宿主主题色（color-mix 低透明度同色系底，深夜下不丢警告色） */
+.op-badge.ok { background: color-mix(in srgb, var(--green, #7bae7f) 15%, transparent); }
+.op-badge.fail { background: color-mix(in srgb, var(--danger, #8b3a3a) 14%, transparent); }
+.op-badge.run { background: color-mix(in srgb, var(--link, var(--accent, #5b8fd9)) 14%, transparent); }
 
 .op-meta {
   flex: none;
   font-size: 11px;
-  color: var(--text-dim, #8e9196);
+  color: var(--text-muted, #8e9196);
   white-space: nowrap;
 }
 
@@ -80,7 +108,7 @@ body[data-hana-theme="midnight-contrast"] {
   flex: none;
   border: none;
   background: none;
-  color: var(--text-faint, #8e9196);
+  color: var(--text-muted, #8e9196);
   font-size: 11px;
   cursor: pointer;
   padding: 2px 4px;
@@ -93,7 +121,7 @@ body[data-hana-theme="midnight-contrast"] {
 .op-summary {
   margin-top: 4px;
   font-size: 12px;
-  color: var(--text-dim, #6b6f73);
+  color: var(--text-light, #6b6f73);
   white-space: pre-wrap;
   word-break: break-all;
   max-height: 120px;
@@ -118,10 +146,46 @@ body[data-hana-theme="midnight-contrast"] {
 .op-d-label {
   flex: none;
   width: 56px;
-  color: var(--text-faint, #9a9ea2);
+  color: var(--text-muted, #9a9ea2);
 }
 .op-d-value {
   flex: 1;
   min-width: 0;
   word-break: break-all;
 }
+
+/* 完整输出区：默认收起，点击展开（可滚动，长输出不撑破卡片） */
+.op-output-wrap {
+  margin-top: 6px;
+  border-top: 1px solid var(--border, rgba(122, 96, 88, 0.18));
+  padding-top: 6px;
+}
+
+.op-output-toggle {
+  border: none;
+  background: none;
+  color: var(--text-light, #6b6f73);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-family: inherit;
+}
+.op-output-toggle:hover { background: rgba(0, 0, 0, 0.05); }
+
+.op-output {
+  display: none;
+  margin-top: 4px;
+  max-height: 260px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--bg-card, rgba(83, 125, 150, 0.06));
+  color: var(--text-light, #5a5d60);
+}
+.op-output-wrap.open .op-output { display: block; }

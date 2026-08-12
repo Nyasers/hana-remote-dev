@@ -1,6 +1,7 @@
 import { runtimeHolder } from "../lib/runtime.js";
 import * as wake from "../lib/wake.js";
 import { attachCard } from "../lib/card-utils.js";
+import { resolveAgentName } from "../lib/agent-name.js";
 export const name = "exec_command";
 export const description = "Execute a shell command on a remote host. Auto-connects when the profile is not connected. With tty: true, starts an interactive session and returns a sessionId for hrd_write_stdin.";
 
@@ -30,7 +31,12 @@ export const parameters = {
     },
     wakeOnExit: {
       type: "boolean",
-      description: "tty only. Explicit intent for wake-on-exit: true = wake the agent when this session ends normally (bypasses filters); false = do not wake on normal exit. Omit to use the default policy (wake if session ran >= 3s or ended abnormally).",
+      description: "tty / stream 通用。Explicit intent for wake-on-exit: true = wake the agent when this session/operation ends normally (bypasses filters); false = do not wake on normal end (stream 下仅记录，卡片照常)。Omit to use the default policy (wake on completion; tty 下需会话 ran >= 3s 或异常结束).",
+    },
+    stream: {
+      type: "boolean",
+      description: "Streaming mode: returns immediately with a live card (real-time output accrual). Retrieve the final result with the wait tool (opId comes back in result.details.streamOpId). Mutually exclusive with tty. 完成时默认唤醒 Agent（deferred 投递结果），wakeOnExit: false 只记录不唤醒。",
+      default: false,
     },
   },
   required: ["connectionId", "command"],
@@ -44,6 +50,8 @@ export async function execute(input, ctx) {
   }
 
   const started = Date.now();
+  // 卡片 {name} 占位符：当前会话的 Agent 显示名（解析失败由渲染层回退 HRD）
+  const agentName = resolveAgentName(ctx);
   let connId = null;
   let connInstance = null;
   let execResult = null; // 一次性命令执行结果：函数级 finally 落盘会话记录用（与 try 块作用域无关）
@@ -51,11 +59,16 @@ export async function execute(input, ctx) {
   let reason = null;
   let exitCode = null;
   let summary = "";
+  let output = ""; // 完整输出（stdout/stderr + 结局标注）：卡片详情展示 + result.details 供调用方读取
   let ttyHistId = null; // tty 会话：创建时记录，关闭时按结局回写同一条
   let opId = null; // 非 tty 执行：startOperation 的 opId（函数级，供 catch/finally 注入卡片）
   let catchRecorded = false; // catch 路径已自行 recordHistory（连接失败等 op 创建前抛错），外层 finally 跳过
+  let streamHandled = false; // stream 模式：落盘/释放由后台执行自管，finally 跳过
 
   try {
+    if (input.tty && input.stream) {
+      return { content: [{ type: "text", text: "tty 与 stream 互斥：交互会话请用 tty，流式执行请用 stream" }] };
+    }
     if (input.tty) {
       // tty 会话走独立会话连接（profileId#session）：与 exec 连接分离，
       // 长驻互不挤占、断开互不级联；同 profile 的 tty 会话共享该连接。
@@ -165,6 +178,7 @@ export async function execute(input, ctx) {
         label: input.command,
         connId,
         connInstance,
+        agentName,
         status,
         startedAt: new Date(started).toISOString(),
         durationMs: Date.now() - started,
@@ -180,6 +194,153 @@ export async function execute(input, ctx) {
       );
     }
 
+    // ── stream 模式：立即返回 + 后台执行 + 卡片实时推进 ──
+    // 仿 download-progress：工具不阻塞（卡片随 result 挂载时命令还在跑），
+    // 输出经 appendOpOutput 增量进 in-flight 状态，卡片轮询 /ops/status
+    // 由 running 态一路推到完成态；Agent 用 wait 取终局结果。
+    if (input.stream) {
+      connId = await rd.pathRef.ensureConnection(input.connectionId, { store: rd.connectionStore });
+      connInstance = rd.sshClient.instanceOf(connId);
+      let streamRef = null;
+      let killed = false;
+      opId = rd.operations.startOperation({
+        connId,
+        connInstance,
+        agentName,
+        kind: "exec",
+        label: input.command,
+        kill: () => {
+          killed = true;
+          try {
+            streamRef?.close();
+          } catch {
+            /* stream may already be gone */
+          }
+        },
+      });
+      // deferred 注册：完成即唤醒宿主 Agent（卡片完成 = 任务终态 = 宿主原生钩子）。
+      // 结果随 hana-background-result 直接送达，Agent 无需信标二次查询。
+      const live0 = runtimeHolder.current;
+      await wake.registerDeferredWake({
+        bus: live0?.bus,
+        sessionPath: ctx.sessionPath,
+        taskId: opId,
+        label: input.command,
+        wakeOnExit: typeof input.wakeOnExit === "boolean" ? input.wakeOnExit : undefined,
+        log: live0?.log,
+      });
+      // 后台执行（fire-and-forget）：结局判定与常规 exec 一致，终局落盘 + 释放；
+      // 卡片轮询不受工具返回影响（op_xxx 先命中 in-flight，落盘后命中磁盘双写副本）。
+      rd.sshClient
+        .exec(connId, input.command, {
+          cwd: input.workdir,
+          timeout: input.timeout,
+          onStream: (s) => {
+            streamRef = s;
+            try {
+              s.on("data", (d) => rd.operations.appendOpOutput(opId, String(d)));
+              s.stderr.on("data", (d) => rd.operations.appendOpOutput(opId, String(d)));
+            } catch {
+              /* 监听失败不影响执行 */
+            }
+          },
+        })
+        .then((result) => {
+          let st = "ok";
+          let rs = null;
+          let sm = "";
+          if (killed) {
+            st = "killed";
+            sm = "operation killed";
+          } else if (result.timedOut) {
+            st = "timeout";
+            sm = `命令超时（超过 ${input.timeout || 30}s）`;
+          } else if (result.code === undefined) {
+            st = "interrupted";
+            rs = rd.sshClient.wasManuallyDisconnected(connId) ? "disconnect" : "lost";
+            sm = rs === "disconnect" ? "已断开：命令未完成" : "连接丢失：命令未完成";
+          }
+          const parts = [];
+          if (result.stdout) parts.push(`── stdout ──\n${result.stdout}`);
+          if (result.stderr) parts.push(`── stderr ──\n${result.stderr}`);
+          if (!result.stdout && !result.stderr) parts.push("(no output)");
+          if (result.timedOut) parts.push(`\n命令超时：超过 ${input.timeout || 30}s 未完成`);
+          if (result.code === undefined && !result.timedOut) parts.push("\n连接中断：命令未完成（通道已关闭）");
+          if (!killed && result.code !== undefined) parts.push(`\nExit code: ${result.code}`);
+          rd.operations.recordHistory({
+            tool: "exec_command",
+            label: input.command,
+            connId,
+            connInstance,
+            agentName,
+            status: st,
+            reason: rs,
+            startedAt: new Date(started).toISOString(),
+            durationMs: Date.now() - started,
+            exitCode: result.code ?? null,
+            summary: sm,
+            output: parts.join("\n"),
+            opRef: opId,
+          });
+          rd.operations.endOperation(opId);
+          writeCommandLog(rd, input, connId, result, { status: st, reason: rs, started });
+          // deferred 终态：完成结果送达宿主（默认唤醒 Agent 回合；wakeOnExit=false 仅记录）
+          wake.resolveDeferredWake({
+            bus: runtimeHolder.current?.bus,
+            taskId: opId,
+            result: {
+              opId,
+              tool: "exec_command",
+              status: st,
+              exitCode: result.code ?? null,
+              durationMs: Date.now() - started,
+              label: String(input.command || ""),
+              output: parts.join("\n").slice(0, 4096), // 消息体截断；完整输出在卡片/落盘
+            },
+            log: runtimeHolder.current?.log,
+          });
+        })
+        .catch((err) => {
+          const timedOut = err?.hrdTimedOut === true;
+          // 失败前可能已有部分输出（appendOpOutput 增量）：先取快照再释放
+          const partial = rd.operations.readOperation(opId)?.output || "";
+          rd.operations.recordHistory({
+            tool: "exec_command",
+            label: input.command,
+            connId,
+            connInstance,
+            agentName,
+            status: timedOut ? "timeout" : "error",
+            reason: null,
+            startedAt: new Date(started).toISOString(),
+            durationMs: Date.now() - started,
+            exitCode: null,
+            summary: timedOut ? `命令超时（超过 ${input.timeout || 30}s）` : String(err?.message || err).slice(0, 300),
+            output: partial,
+            opRef: opId,
+          });
+          rd.operations.endOperation(opId);
+          // deferred 失败终态：notifyAgentOnFailure=true → 宿主唤醒 Agent 决策
+          wake.failDeferredWake({
+            bus: runtimeHolder.current?.bus,
+            taskId: opId,
+            error: {
+              message: `${timedOut ? "timeout" : "error"}: ${(timedOut ? `命令超时（超过 ${input.timeout || 30}s）` : String(err?.message || err)).slice(0, 300)}`,
+            },
+            log: runtimeHolder.current?.log,
+          });
+        });
+      streamHandled = true;
+      // 立即返回：对话主区只显示命令；卡片从挂载即 running，输出逐行推进
+      return attachCard(
+        {
+          content: [{ type: "text", text: String(input.command || input.connectionId || "exec_command") }],
+          details: { streamOpId: opId, stream: true },
+        },
+        { opId, label: input.command, summary: "", output: "", stream: true }
+      );
+    }
+
     // 常规 exec：复用常规连接（排除会话连接）
     connId = await rd.pathRef.ensureConnection(input.connectionId, { store: rd.connectionStore });
     connInstance = rd.sshClient.instanceOf(connId);
@@ -188,6 +349,7 @@ export async function execute(input, ctx) {
     opId = rd.operations.startOperation({
       connId,
       connInstance,
+      agentName,
       kind: "exec",
       label: input.command,
       kill: () => {
@@ -205,6 +367,14 @@ export async function execute(input, ctx) {
         timeout: input.timeout,
         onStream: (s) => {
           stream = s;
+          // 常规 exec 也推增量：长命令（apt install / build）执行中
+          // 面板进行中操作实时显示输出（64KB 截断，内存最近窗口）
+          try {
+            s.on("data", (d) => rd.operations.appendOpOutput(opId, String(d)));
+            s.stderr.on("data", (d) => rd.operations.appendOpOutput(opId, String(d)));
+          } catch {
+            /* 监听失败不影响执行 */
+          }
         },
       });
       execResult = result;
@@ -221,12 +391,14 @@ export async function execute(input, ctx) {
       if (result.stdout) parts.push(`── stdout ──\n${result.stdout}`);
       if (result.stderr) parts.push(`── stderr ──\n${result.stderr}`);
       if (!result.stdout && !result.stderr) parts.push("(no output)");
+      let contentText;
       if (result.timedOut) {
         // 命令超时（ssh-client 主动关流）：系统行为，与连接中断区分。
         const secs = input.timeout || 30;
         parts.push(`\n命令超时：超过 ${secs}s 未完成`);
         status = "timeout";
         summary = `命令超时（超过 ${secs}s）`;
+        contentText = `Command timeout: exceeded ${secs}s`;
       } else if (result.code === undefined) {
         // Channel closed without an exit status: the connection was torn
         // down mid-flight (disconnect / destroy).
@@ -242,14 +414,18 @@ export async function execute(input, ctx) {
           reason = "lost";
           summary = "连接丢失：命令未完成";
         }
+        contentText = `命令未完成（${reason === "disconnect" ? "连接被主动断开" : "连接丢失"}）`;
       } else {
         parts.push(`\nExit code: ${result.code}`);
-        const outText = (result.stdout || "").trim();
-        summary = (outText ? outText.split("\n")[0].slice(0, 160) : "") + ` (exit ${result.code})`;
+        // 卡片不显示输出摘要行：只留命令（op-sub）+ 详情退出码（op-d-row）
+        summary = "";
+        // 对话主区只显示跑了什么命令（摘要/输出全部收进卡片详情）
+        contentText = String(input.command || input.connectionId || "exec_command");
       }
-      return attachCard(
-        { content: [{ type: "text", text: parts.join("\n") }] },
-        { opId, label: input.command, summary }
+      // 完整输出（含结局标注）：卡片详情展示 + 随 result 返回给调用方
+      output = parts.join("\n");      return attachCard(
+        { content: [{ type: "text", text: contentText }], details: { output } },
+        { opId, label: input.command, summary, output }
       );
     } finally {
       rd.operations.endOperation(opId);
@@ -268,6 +444,7 @@ export async function execute(input, ctx) {
       label: input.command,
       connId,
       connInstance,
+      agentName,
       status,
       reason,
       startedAt: new Date(started).toISOString(),
@@ -294,18 +471,20 @@ export async function execute(input, ctx) {
     // 唯一收口：所有路径（ok / killed / interrupted / error）只记一条历史。
     // tty 会话例外：由 tty 分支自行记录（status=ok + 会话创建），结局在
     // 会话关闭时通过 updateHistory 回写——单一收口不适用（结局异步）。
-    if (!ttyHistId && !catchRecorded) {
+    if (!ttyHistId && !catchRecorded && !streamHandled) {
       rd.operations.recordHistory({
       tool: "exec_command",
       label: input.command,
       connId,
       connInstance,
+      agentName,
       status,
       reason,
       startedAt: new Date(started).toISOString(),
       durationMs: Date.now() - started,
       exitCode,
       summary,
+      output,
       opRef: opId,
     });
       // 一次性命令记录：执行已发生（execResult 非空）才落盘；连接失败等未执行场景不记。

@@ -129,6 +129,8 @@ export async function execute(input, ctx) {
             block = `${fullPath}:${i + 1}:${lines[i]}`;
           }
           hits.push(block);
+          // 增量输出：每命中一条推给面板进行中操作（实时匹配进度）
+          ctx?._hrdAppend?.(block + "\n");
           return hits.length < limit; // stop early when limit reached
         }
       } catch {

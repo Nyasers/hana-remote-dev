@@ -46,9 +46,8 @@
     } catch (e) { /* 忽略 */ }
   }
 
-  // ── 状态机：完成态轮询到即停（进行时扩展：running 时持续轮询）──
+  // ── 状态机：running 持续轮询（输出增量推进），完成态渲染一次即停 ──
   var timer = null;
-  var FINAL = { ok: 1, fail: 1 };
 
   function poll() {
     apiFetch("/ops/status?opId=" + encodeURIComponent(opId), { cache: "no-store" })
@@ -60,7 +59,7 @@
           return;
         }
         render(data.op);
-        stop(); // 完成态卡片：渲染一次即停
+        if (data.op.status !== "running") stop(); // 终局停；running 持续轮询
       })
       .catch(function () { /* 瞬时网络错误静默重试 */ });
   }
@@ -103,15 +102,16 @@
   }
 
   function render(op) {
+    var running = op.status === "running";
     var ok = op.status === "ok";
-    var badge = ok ? "完成" : (op.reason || "失败");
+    var badge = running ? "运行中" : ok ? "完成" : (op.reason || "失败");
     var html = "";
     html += '<div class="op">';
     // 主行：图标 + 状态文案（复用宿主 i18n 三态：正在…/看完了/打不开…）+ 徽标 + 耗时
     html += '<div class="op-row">';
     html += '<span class="op-icon">' + esc(op.emoji || "🔧") + "</span>";
     html += '<span class="op-text">' + esc(op.text || op.tool) + "</span>";
-    html += '<span class="op-badge ' + (ok ? "ok" : "fail") + '">' + esc(badge) + "</span>";
+    html += '<span class="op-badge ' + (running ? "run" : ok ? "ok" : "fail") + '">' + esc(badge) + "</span>";
     html += '<span class="op-meta">' + fmtDuration(op.durationMs) + "</span>";
     html += '<button class="op-fold" id="op-fold" title="展开/收起详情">❯</button>';
     html += "</div>";
@@ -121,6 +121,15 @@
     }
     if (op.summary) {
       html += '<div class="op-summary' + (ok ? "" : " err") + '">' + esc(op.summary) + "</div>";
+    }
+    // 完整输出：命令 stdout/stderr 收进详情区（可滚动），不在主行直接铺开；
+    // running 时默认展开（实时看输出推进），终局回到用户手动折叠状态（默认收起）
+    if (op.output) {
+      var outOpen = outputOpen || running;
+      html += '<div class="op-output-wrap' + (outOpen ? " open" : "") + '">';
+      html += '<button class="op-output-toggle" id="op-output-toggle" title="展开/收起完整输出">输出 ' + (outOpen ? "▴" : "▾") + "</button>";
+      html += '<pre class="op-output">' + esc(op.output) + "</pre>";
+      html += "</div>";
     }
     html += '<div class="op-detail">';
     html += '<div class="op-d-row"><span class="op-d-label">工具</span><span class="op-d-value">' + esc(op.tool) + "</span></div>";
@@ -137,6 +146,26 @@
 
     var foldBtn = document.getElementById("op-fold");
     if (foldBtn) foldBtn.addEventListener("click", toggleFold);
+    var outputToggle = document.getElementById("op-output-toggle");
+    if (outputToggle) outputToggle.addEventListener("click", toggleOutput);
+
+    // running 时输出区随增量自动滚到底（盯着最新一行）
+    if (running) {
+      var pre = root.querySelector(".op-output");
+      if (pre) pre.scrollTop = pre.scrollHeight;
+    }
+  }
+
+  // ── 输出区折叠（默认收起，点击展开；iframe 高度自适应）──
+  var outputOpen = false;
+
+  function toggleOutput() {
+    outputOpen = !outputOpen;
+    var wrap = root.querySelector(".op-output-wrap");
+    var btn = root.querySelector(".op-output-toggle");
+    if (wrap) wrap.classList.toggle("open", outputOpen);
+    if (btn) btn.textContent = outputOpen ? "输出 ▴" : "输出 ▾";
+    reportSize();
   }
 
   function renderFail(msg) {

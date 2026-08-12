@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { runtimeHolder } from "../lib/runtime.js";
 import { attachCard } from "../lib/card-utils.js";
+import { resolveAgentName } from "../lib/agent-name.js";
 export const name = "file";
 export const description = "Remote file metadata (stat) and universal copy: local↔remote, remote↔remote (same connection via cp, cross-connection via streaming relay). Local↔local copies also work (intentional redundancy, SCP semantics: bare paths are local).";
 
@@ -31,6 +32,8 @@ export async function execute(input, ctx) {
 
   const started = Date.now();
   const label = `${input.action} ${input.source}${input.target ? " → " + input.target : ""}`.slice(0, 160);
+  // 卡片 {name} 占位符：当前会话的 Agent 显示名（解析失败由渲染层回退 HRD）
+  const agentName = resolveAgentName(ctx);
   const rec = (status, summary, exitCode = null, connId = null, opRef = null, connInstance = null) => {
     const id = rd.operations.recordHistory({
       tool: "file",
@@ -38,6 +41,7 @@ export async function execute(input, ctx) {
       connId,
       // 连接实例 id 在连接存活时取（withOperation 传入）；此时重查可能已释放落空。
       connInstance: connInstance ?? (connId ? rd.sshClient.instanceOf(connId) : null),
+      agentName,
       status,
       startedAt: new Date(started).toISOString(),
       durationMs: Date.now() - started,
@@ -112,6 +116,7 @@ export async function execute(input, ctx) {
               connId,
               kind: "copy",
               label: `Upload ${src.path} → ${input.target}`,
+              agentName,
               kill: () => {
                 try { rs?.destroy(); } catch { /* ignore */ }
                 try { ws?.destroy(); } catch { /* ignore */ }
@@ -154,6 +159,7 @@ export async function execute(input, ctx) {
               connId,
               kind: "copy",
               label: `Download ${input.source} → ${dst.path}`,
+              agentName,
               kill: () => {
                 try { rs?.destroy(); } catch { /* ignore */ }
                 try { ws?.destroy(); } catch { /* ignore */ }
@@ -202,6 +208,7 @@ export async function execute(input, ctx) {
             connId: srcRes.connId,
             kind: "copy",
             label: `Copy ${input.source} → ${input.target}`,
+            agentName,
             kill: () => {
               killed = true;
               try {
@@ -248,6 +255,7 @@ export async function execute(input, ctx) {
             connId: srcRes.connId,
             kind: "copy",
             label: `Relay ${input.source} → ${input.target}`,
+            agentName,
             kill: () => {
               try { rs?.destroy(); } catch { /* ignore */ }
               try { ws?.destroy(); } catch { /* ignore */ }
@@ -300,7 +308,7 @@ function requireRuntime(ctx) {
 /** Register an in-flight operation for the panel, run the work, always end.
  *  When the kill function fires and the work then settles with an error,
  *  resolves with { __killed: true } so callers can report a clean kill. */
-async function withOperation({ connId, kind, label, kill }, work) {
+async function withOperation({ connId, kind, label, kill, agentName }, work) {
   const rd = requireRuntime();
   let killed = false;
   // 连接实例 id：在连接存活时取（操作结束自动释放后 instanceOf 会落空），
@@ -309,6 +317,7 @@ async function withOperation({ connId, kind, label, kill }, work) {
   const opId = rd.operations.startOperation({
     connId,
     connInstance,
+    agentName,
     kind,
     label,
     kill: () => {

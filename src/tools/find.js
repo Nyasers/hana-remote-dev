@@ -64,6 +64,8 @@ export async function execute(input, ctx) {
           if (re.test(name)) {
             const rel = fullPath.startsWith(path) ? fullPath.slice(path.length + 1) : fullPath;
             results.push(rel);
+            // 增量输出：每命中一个文件推给面板进行中操作（实时扫描进度）
+            ctx?._hrdAppend?.(rel + "\n");
             if (results.length >= limit) return false;
           }
           return true;
