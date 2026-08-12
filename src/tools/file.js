@@ -290,13 +290,9 @@ export async function execute(input, ctx) {
       const srcRes = await rd.pathRef.resolveRemote(src, { store });
       const dstRes = await rd.pathRef.resolveRemote(dst, { store });
       if (srcRes.connId === dstRes.connId) {
-        // same connection: server-side cp, zero transfer
-        const client = await rd.sshClient.sftp(srcRes.connId);
-        try {
-          await mkdirpRemote(client, dstRes.path);
-        } finally {
-          client.end();
-        }
+        // same connection: server-side cp, zero transfer.
+        // mkdir 并入 exec 命令（借出 sftp 建目录会触发 releaseIfIdle 释放连接，
+        // 后续 exec 将找不到连接——与 edit 双 sftp 同类问题）。
         let stream = null;
         let killed = false;
         const result = await withOperation(
@@ -313,11 +309,15 @@ export async function execute(input, ctx) {
             },
           },
           async () =>
-            rd.sshClient.exec(srcRes.connId, `cp ${shellQuote(srcRes.path)} ${shellQuote(dstRes.path)}`, {
-              onStream: (s) => {
-                stream = s;
-              },
-            })
+            rd.sshClient.exec(
+              srcRes.connId,
+              `${mkdirCmd(dstRes.path)}cp ${shellQuote(srcRes.path)} ${shellQuote(dstRes.path)}`,
+              {
+                onStream: (s) => {
+                  stream = s;
+                },
+              }
+            )
         );
         if (killed) {
           rec("killed", `copy ${input.source} → ${input.target}`, null, srcRes.connId, result.opId, result.connInstance);
@@ -479,6 +479,13 @@ async function mkdirpRemote(client, remotePath) {
   if (idx > 0) {
     await client.mkdir(remotePath.slice(0, idx), true);
   }
+}
+
+/** mkdir -p 命令前缀（若路径有父目录）；并入 exec 避免借出 sftp client。 */
+function mkdirCmd(remotePath) {
+  const idx = remotePath.lastIndexOf("/");
+  if (idx <= 0) return "";
+  return `mkdir -p ${shellQuote(remotePath.slice(0, idx))} && `;
 }
 
 /** POSIX-safe single-quote shell quoting. */

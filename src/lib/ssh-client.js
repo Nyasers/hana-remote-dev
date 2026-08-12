@@ -1250,35 +1250,49 @@ export async function readRange(connId, remotePath, offset, length) {
  */
 export async function writeAtomic(connId, remotePath, content) {
   const c = await sftp(connId);
+  try {
+    await writeAtomicWith(c, remotePath, content);
+  } finally {
+    c.end();
+  }
+}
+
+/**
+ * Atomic write reusing an already-borrowed sftp client (edit: read + write
+ * in one session — the borrowed client must NOT be ended until both steps
+ * finish, otherwise the connection gets released mid-operation).
+ * @param {object} client - sftp client from sftp()
+ * @param {string} remotePath
+ * @param {string|Buffer} content
+ */
+export async function writeAtomicWith(client, remotePath, content) {
   let tmp = null;
   try {
     const idx = remotePath.lastIndexOf("/");
     const dir = idx > 0 ? remotePath.slice(0, idx) : "/";
-    await c.mkdir(dir, true);
+    await client.mkdir(dir, true);
     tmp = `${remotePath}.hrd-tmp-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-    await c.writeFile(tmp, content);
+    await client.writeFile(tmp, content);
     try {
-      await c.rename(tmp, remotePath);
+      await client.rename(tmp, remotePath);
     } catch {
       // POSIX rename overwrites the target; Windows needs unlink first.
       try {
-        await c.unlink(remotePath);
+        await client.unlink(remotePath);
       } catch {
         // target may not exist
       }
-      await c.rename(tmp, remotePath);
+      await client.rename(tmp, remotePath);
     }
     tmp = null;
   } catch (err) {
     if (tmp) {
       try {
-        await c.unlink(tmp);
+        await client.unlink(tmp);
       } catch {
         // ignore
       }
     }
     throw err;
-  } finally {
-    c.end();
   }
 }
