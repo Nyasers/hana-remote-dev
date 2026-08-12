@@ -75,9 +75,46 @@ body[data-hana-theme="dark"] {
   margin-top: 1px;
   font-size: 12px;
   color: var(--text-light, #6b6f73);
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+.op-sub-text {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 展开详情时取消溢出，命令完整可见（可换行）；收起恢复单行截断 */
+.op.expanded .op-sub-text {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.op-copy {
+  flex: none;
+  opacity: 0;
+  border: none;
+  background: none;
+  color: var(--text-muted, #8e9196);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: opacity 0.15s ease;
+}
+.op-sub:hover .op-copy,
+.op-copy:focus-visible {
+  opacity: 1;
+}
+.op-copy:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text-light, #6b6f73);
+}
+.op-copy.copied {
+  opacity: 1;
+  color: var(--green, #7bae7f);
 }
 
 .op-badge {

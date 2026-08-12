@@ -188,8 +188,8 @@
     html += '<span class="op-meta op-duration"></span>';
     html += '<button class="op-fold" id="op-fold" title="展开/收起详情">❯</button>';
     html += "</div>";
-    // 副行：目标（命令/路径）
-    html += '<div class="op-sub"></div>';
+    // 副行：目标（命令/路径），hover 可复制；展开详情时取消溢出完整可见
+    html += '<div class="op-sub"><span class="op-sub-text"></span><button class="op-copy" title="复制命令">⧉</button></div>';
     html += '<div class="op-summary"></div>';
     // 详情：工具 / 连接 / 退出码 / 耗时 / 开始 / 原因
     html += '<div class="op-detail">';
@@ -210,7 +210,38 @@
     if (state.expanded) root.querySelector(".op").classList.add("expanded");
     root.querySelector(".op-fold").addEventListener("click", toggleFold);
     root.querySelector(".op-output-toggle").addEventListener("click", toggleOutput);
+    root.querySelector(".op-copy").addEventListener("click", copyCommand);
     shellBuilt = true;
+  }
+
+  // ── 复制命令：clipboard API 优先，textarea+execCommand 兜底（非安全上下文） ──
+  function copyCommand() {
+    var text = root.querySelector(".op-sub-text").textContent || "";
+    if (!text) return;
+    var done = function (ok) {
+      var btn = root.querySelector(".op-copy");
+      if (!btn) return;
+      btn.classList.toggle("copied", ok);
+      btn.textContent = ok ? "✓" : "✗";
+      setTimeout(function () {
+        btn.classList.remove("copied");
+        btn.textContent = "⧉";
+      }, 1200);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+      return;
+    }
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    done(ok);
   }
 
   function patchText(sel, text) {
@@ -236,7 +267,7 @@
     patchText(".op-duration", fmtDuration(op.durationMs));
 
     // 副行 / 摘要
-    patchText(".op-sub", op.label || "");
+    patchText(".op-sub-text", op.label || "");
     var sumEl = root.querySelector(".op-summary");
     if (sumEl) {
       var sum = op.summary || "";
