@@ -192,7 +192,10 @@ export async function execute(input, ctx) {
         connId,
         connInstance,
         agentName,
-        status,
+        // 会话创建即 running：卡片轮询持续拉取（terminal running 文案），
+        // 结局 updateHistory 回写终态后卡片渲染终局再停（否则创建态 ok 会让
+        // 卡片首次轮询即 stop，结局回写后不再刷新，输出区永远空白）。
+        status: "running",
         startedAt: new Date(started).toISOString(),
         durationMs: Date.now() - started,
         exitCode: null,
