@@ -38,8 +38,39 @@ body[data-hana-theme="midnight-contrast"] {
 body[data-hana-theme="dark"] {
   color: var(--text, #c8c8c8);
 }
+/* 宿主跟随系统（auto）或未注入主题变量（theme.css 为空/未知主题/加载失败）时，
+   卡片自己跟随系统深浅：系统深色 → 深色变量（与宿主深色 UI 一致），
+   系统浅色 → 浅色变量。避免深色宿主 UI 里卡片回退默认深灰字导致可见度低。 */
 @media (prefers-color-scheme: dark) {
-  body { color: var(--text, #c8c8c8); }
+  body[data-hana-theme="auto"],
+  body[data-hana-theme="system"],
+  body:not([data-hana-theme]) {
+    --text: #E1EAF0;
+    --text-light: #B7C5CE;
+    --text-muted: #A3B5C0;
+    --bg-card: #445560;
+    --border: rgba(170, 121, 141, 0.16);
+    --green: #8CC790;
+    --danger: #C77070;
+    --accent: #C99AAF;
+    --link: #B9E2FF;
+    color: var(--text, #c8c8c8);
+  }
+}
+@media (prefers-color-scheme: light) {
+  body[data-hana-theme="auto"],
+  body[data-hana-theme="system"],
+  body:not([data-hana-theme]) {
+    --text: #3B3D3F;
+    --text-light: #6B6F73;
+    --text-muted: #8E9196;
+    --bg-card: #F2F4F6;
+    --border: rgba(122, 96, 88, 0.18);
+    --green: #7BAE7F;
+    --danger: #8B3A3A;
+    --accent: #5B8FD9;
+    --link: #2F6F8F;
+  }
 }
 
 .op {
