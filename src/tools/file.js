@@ -31,17 +31,21 @@ export async function execute(input, ctx) {
 
   const started = Date.now();
   const label = `${input.action} ${input.source}${input.target ? " → " + input.target : ""}`.slice(0, 160);
-  const rec = (status, summary, exitCode = null, connId = null) => {
+  const rec = (status, summary, exitCode = null, connId = null, opRef = null, connInstance = null) => {
     const id = rd.operations.recordHistory({
       tool: "file",
       label,
       connId,
-      connInstance: connId ? rd.sshClient.instanceOf(connId) : null,
+      // 连接实例 id 在连接存活时取（withOperation 传入）；此时重查可能已释放落空。
+      connInstance: connInstance ?? (connId ? rd.sshClient.instanceOf(connId) : null),
       status,
       startedAt: new Date(started).toISOString(),
       durationMs: Date.now() - started,
       exitCode,
       summary: String(summary || "").slice(0, 300),
+      // copy 分支：关联 withOperation 的 opId，卡片按 op_xxx 查完成态；
+      // 缺失会导致 getHistory(op_xxx) 查不到（stat 用 h_id 主键不受影响）。
+      opRef,
     });
     return id;
   };
@@ -125,13 +129,13 @@ export async function execute(input, ctx) {
           client.end();
         }
         if (r?.__killed) {
-          rec("killed", `upload ${src.path} → ${input.target}`, null, connId);
+          rec("killed", `upload ${src.path} → ${input.target}`, null, connId, r.opId, r.connInstance);
           return attachCard(
             { content: [{ type: "text", text: `Operation killed: upload ${src.path} → ${input.target}` }] },
             { opId: r.opId, label, summary: "operation killed" }
           );
         }
-        rec("ok", `Uploaded ${src.path} → ${input.target}`, null, connId);
+        rec("ok", `Uploaded ${src.path} → ${input.target}`, null, connId, r.opId, r.connInstance);
         return attachCard(
           { content: [{ type: "text", text: `Uploaded ${src.path} → ${input.target}` }] },
           { opId: r.opId, label, summary: `Uploaded ${src.path} → ${input.target}` }
@@ -167,13 +171,13 @@ export async function execute(input, ctx) {
           client.end();
         }
         if (r?.__killed) {
-          rec("killed", `download ${input.source} → ${dst.path}`, null, connId);
+          rec("killed", `download ${input.source} → ${dst.path}`, null, connId, r.opId, r.connInstance);
           return attachCard(
             { content: [{ type: "text", text: `Operation killed: download ${input.source} → ${dst.path}` }] },
             { opId: r.opId, label, summary: "operation killed" }
           );
         }
-        rec("ok", `Downloaded ${input.source} → ${dst.path}`, null, connId);
+        rec("ok", `Downloaded ${input.source} → ${dst.path}`, null, connId, r.opId, r.connInstance);
         return attachCard(
           { content: [{ type: "text", text: `Downloaded ${input.source} → ${dst.path}` }] },
           { opId: r.opId, label, summary: `Downloaded ${input.source} → ${dst.path}` }
@@ -213,20 +217,20 @@ export async function execute(input, ctx) {
             })
         );
         if (killed) {
-          rec("killed", `copy ${input.source} → ${input.target}`, null, srcRes.connId);
+          rec("killed", `copy ${input.source} → ${input.target}`, null, srcRes.connId, result.opId, result.connInstance);
           return attachCard(
             { content: [{ type: "text", text: `Operation killed: copy ${input.source} → ${input.target}` }] },
             { opId: result.opId, label, summary: "operation killed" }
           );
         }
         if (result.code !== 0) {
-          rec("error", `cp failed (exit ${result.code})`, result.code, srcRes.connId);
+          rec("error", `cp failed (exit ${result.code})`, result.code, srcRes.connId, result.opId, result.connInstance);
           return attachCard(
             { content: [{ type: "text", text: `cp failed (exit ${result.code}): ${result.stderr || "(no stderr)"}` }] },
             { opId: result.opId, label, summary: `cp failed (exit ${result.code})` }
           );
         }
-        rec("ok", `Copied ${input.source} → ${input.target}`, 0, srcRes.connId);
+        rec("ok", `Copied ${input.source} → ${input.target}`, 0, srcRes.connId, result.opId, result.connInstance);
         return attachCard(
           { content: [{ type: "text", text: `Copied ${input.source} → ${input.target}` }] },
           { opId: result.opId, label, summary: `Copied ${input.source} → ${input.target}` }
@@ -258,7 +262,7 @@ export async function execute(input, ctx) {
           }
         );
         if (r?.__killed) {
-          rec("killed", `relay ${input.source} → ${input.target}`, null, srcRes.connId);
+          rec("killed", `relay ${input.source} → ${input.target}`, null, srcRes.connId, r.opId, r.connInstance);
           return attachCard(
             { content: [{ type: "text", text: `Operation killed: relay ${input.source} → ${input.target}` }] },
             { opId: r.opId, label, summary: "operation killed" }
@@ -268,7 +272,7 @@ export async function execute(input, ctx) {
         clientA.end();
         clientB.end();
       }
-      rec("ok", `Relayed ${input.source} → ${input.target}`, null, srcRes.connId);
+      rec("ok", `Relayed ${input.source} → ${input.target}`, null, srcRes.connId, r.opId, r.connInstance);
       return attachCard(
         { content: [{ type: "text", text: `Relayed ${input.source} → ${input.target}` }] },
         { opId: r.opId, label, summary: `Relayed ${input.source} → ${input.target}` }
@@ -299,8 +303,12 @@ function requireRuntime(ctx) {
 async function withOperation({ connId, kind, label, kill }, work) {
   const rd = requireRuntime();
   let killed = false;
+  // 连接实例 id：在连接存活时取（操作结束自动释放后 instanceOf 会落空），
+  // 随返回值带给 rec，保证历史批次按当时实例分组（conn_N 而非 profile id）。
+  const connInstance = connId ? rd.sshClient.instanceOf(connId) : null;
   const opId = rd.operations.startOperation({
     connId,
+    connInstance,
     kind,
     label,
     kill: () => {
@@ -317,10 +325,11 @@ async function withOperation({ connId, kind, label, kill }, work) {
     // 统一在返回对象上挂 opId：调用处据此注入卡片（work 可能无返回值）
     const out = r && typeof r === "object" ? r : {};
     out.opId = opId;
+    out.connInstance = connInstance;
     if (killed) out.__killed = true;
     return out;
   } catch (err) {
-    if (killed) return { __killed: true, opId };
+    if (killed) return { __killed: true, opId, connInstance };
     throw err;
   } finally {
     rd.operations.endOperation(opId);

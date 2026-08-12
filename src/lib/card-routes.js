@@ -95,6 +95,7 @@ ${hcLink}
         text: t.text,
         label: snap.label,
         connId: snap.connId,
+        connInstance: snap.connInstance,
         status: snap.status,
         reason: snap.reason,
         startedAt: snap.startedAt,

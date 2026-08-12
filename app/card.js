@@ -124,7 +124,7 @@
     }
     html += '<div class="op-detail">';
     html += '<div class="op-d-row"><span class="op-d-label">工具</span><span class="op-d-value">' + esc(op.tool) + "</span></div>";
-    if (op.connId) html += '<div class="op-d-row"><span class="op-d-label">连接</span><span class="op-d-value">' + esc(op.connId) + "</span></div>";
+    if (op.connInstance || op.connId) html += '<div class="op-d-row"><span class="op-d-label">连接</span><span class="op-d-value">' + esc(op.connInstance || op.connId) + "</span></div>";
     if (op.exitCode != null) html += '<div class="op-d-row"><span class="op-d-label">退出码</span><span class="op-d-value">' + esc(op.exitCode) + "</span></div>";
     html += '<div class="op-d-row"><span class="op-d-label">耗时</span><span class="op-d-value">' + fmtDuration(op.durationMs) + "</span></div>";
     html += '<div class="op-d-row"><span class="op-d-label">开始</span><span class="op-d-value">' + fmtTime(op.startedAt) + "</span></div>";
