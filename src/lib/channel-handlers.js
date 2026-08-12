@@ -16,30 +16,24 @@ import { loadPluginConfig, savePluginConfig } from "./plugin-config.js";
 
 // ---- 会话日志三限（面板配置） ----
 
-/** 当前配置（两限 + idleTimeout）+ 实际占用（logs/sessions/ 目录 .md 文件数与字节）。 */
+/** 当前配置（两限 + idleTimeout）+ 实际占用（logs/ 全量：事件流 + 会话回放 + 归档）。 */
 export function handleSessionLogGet(runtime) {
   const limits = getSessionLogLimits();
   const pcfg = loadPluginConfig(runtime.dataDir);
-  const dir = path.join(runtime.logsDir, "sessions");
   let files = 0;
   let bytes = 0;
   try {
-    for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, d.name);
-      if (d.isDirectory()) {
-        // 日期子目录（sessions/<yyyy-mm-dd>/<id>.md）
-        for (const f of fs.readdirSync(p)) {
-          if (f.endsWith(".md")) {
-            files += 1;
-            bytes += fs.statSync(path.join(p, f)).size;
-          }
+    const walk = (dir) => {
+      for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, d.name);
+        if (d.isDirectory()) walk(p);
+        else {
+          files += 1;
+          bytes += fs.statSync(p).size;
         }
-      } else if (d.isFile() && d.name.endsWith(".md")) {
-        // 存量平铺兼容
-        files += 1;
-        bytes += fs.statSync(p).size;
       }
-    }
+    };
+    walk(runtime.logsDir);
   } catch {
     /* 目录不存在/不可读：按空处理 */
   }
