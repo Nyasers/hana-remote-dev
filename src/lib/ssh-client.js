@@ -8,7 +8,13 @@ import * as sessionLog from "./session-log.js";
  *
  * Key semantics: a saved profile connection is keyed by its internal
  * profileId (HRD_xxx) — a stable, restart-proof handle. Connections made
- * without a saved profile fall back to a transient conn_N id.
+ * without a saved profile fall back to a transient instance id.
+ *
+ * Every connection is identified by a single HRD-style id: saved profiles
+ * use their stable profileId (HRD_xxx, or HRD_xxx#session for session-dedicated
+ * connections), transient connections get a unique HRD_x_<ts>_<n> id. The old
+ * conn_N display layer is gone: it reset per process run, so conn_1 in logs
+ * could refer to different connections across runs.
  *
  * One active connection per profile: connecting again with the same
  * profileId replaces the previous one (disconnect + reconnect), so the
@@ -121,9 +127,9 @@ export function normalizeFingerprint(input) {
  *   previous connection with the same key is replaced.
  * @param {string} [opts.alias] - profile alias, surfaced in listings.
  * @param {string} [opts.key] - explicit pool key (e.g. `${profileId}#session` for
- *   session-dedicated connections). Defaults to profileId / conn_N.
+ *   session-dedicated connections). Defaults to profileId / instance id.
  * @param {boolean} [opts.session] - marks a session-dedicated connection.
- * @returns {Promise<string>} connection handle (profileId, key, or conn_N)
+ * @returns {Promise<string>} connection handle (profileId, key, or instance id)
  */
 export function connect(opts) {
   const lockKey = opts.key || opts.profileId;
@@ -135,11 +141,13 @@ export function connect(opts) {
   const p = new Promise((resolve, reject) => {
     const timeout = (opts.timeout || 10) * 1000;
     const client = new Client();
-    // Stable handle for saved profiles / explicit keys; transient conn_N otherwise.
-    const connId = opts.key || opts.profileId || `conn_${++connCounter}`;
-    // 连接实例 id：每次连接唯一（池 key 稳定，实例区分批次）。
-    // 瞬态连接（connId 已是 conn_N）直接以 connId 作为实例 id。
-    const instanceId = connId.startsWith("conn_") ? connId : `conn_${++connCounter}`;
+    // 连接标识 = 池 key（合一，无独立实例层）：
+    // 已保存连接用 profileId / 显式 key（HRD_xxx 或 HRD_xxx#session，跨运行稳定）；
+    // 瞬态连接（无配置）生成 HRD 风格唯一 id（HRD_x_<ts>_<n>），跨运行不重复。
+    // conn_N 展示层已移除：进程内计数器跨运行重复，落盘追溯有歧义。
+    const transient = !opts.key && !opts.profileId;
+    const instanceId = transient ? `HRD_x_${Date.now().toString(36)}_${++connCounter}` : opts.key || opts.profileId;
+    const connId = instanceId;
 
     // One active connection per pool key: replace the old one.
     if (opts.key || opts.profileId) {
@@ -206,7 +214,7 @@ export function connect(opts) {
         state: ConnState.CONNECTED,
         lastUsedAt: Date.now(),
       });
-      if (eventLogDir) sessionLog.appendEventLog(eventLogDir, "connection", `${sessionLog.eventTs()} connect ok | ${opts.alias || opts.profileId || opts.host} | ${opts.username || "?"}@${opts.host}:${opts.port || 22} | ${connId}`);
+      if (eventLogDir) sessionLog.appendEventLog(eventLogDir, "connection", `${sessionLog.eventTs()} connect ok | ${opts.alias || opts.profileId || opts.host} | ${opts.username || "?"}@${opts.host}:${opts.port || 22} | ${instanceId}`);
       notifyConnectionChange();
       resolve(connId);
     });
@@ -224,7 +232,7 @@ export function connect(opts) {
       if (entry && entry.client === client) {
         entry.state = ConnState.CLOSED;
         connections.delete(connId);
-        if (eventLogDir) sessionLog.appendEventLog(eventLogDir, "connection", `${sessionLog.eventTs()} close | ${connLabel(entry.config)} | socket closed by remote`);
+        if (eventLogDir) sessionLog.appendEventLog(eventLogDir, "connection", `${sessionLog.eventTs()} close | ${connLabel(entry.config)} | ${entry.instanceId} | socket closed by remote`);
         notifyConnectionChange();
       }
     });
@@ -243,7 +251,7 @@ export function connect(opts) {
 /**
  * Resolve a connection by handle: exact pool key first, then by profileId
  * or alias carried in the entry config.
- * @param {string} ref - alias, profileId, or pool key (conn_N)
+ * @param {string} ref - alias, profileId, or pool key (HRD_xxx / HRD_x_...)
  */
 function resolveConnection(ref) {
   if (!ref) return null;
@@ -650,9 +658,9 @@ export async function sftp(connId) {
 }
 
 /**
- * Re-anchor a transient connection (conn_N) to a saved profile's id after
+ * Re-anchor a transient connection (HRD_x_...) to a saved profile's id after
  * the profile has been persisted. Callers get the stable handle back.
- * @param {string} connId - current pool key (conn_N)
+ * @param {string} connId - current pool key (HRD_x_...)
  * @param {string} profileId
  * @param {string} alias
  * @returns {string} the new handle (profileId), or the old one if the
@@ -783,7 +791,7 @@ export function disconnect(connId, { manual = true } = {}) {
       }
     }
     connections.delete(key);
-    if (eventLogDir) sessionLog.appendEventLog(eventLogDir, "connection", `${sessionLog.eventTs()} disconnect ${manual ? "manual" : "auto"} | ${connLabel(entry.config)} | ${key}`);
+    if (eventLogDir) sessionLog.appendEventLog(eventLogDir, "connection", `${sessionLog.eventTs()} disconnect ${manual ? "manual" : "auto"} | ${connLabel(entry.config)} | ${entry.instanceId}`);
     try {
       // destroy() (not end()): end() is a graceful close that waits for
       // in-flight channels to finish, so a long exec would keep running

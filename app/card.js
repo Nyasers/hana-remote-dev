@@ -214,24 +214,21 @@
     shellBuilt = true;
   }
 
-  // ── 复制命令：clipboard API 优先，textarea+execCommand 兜底（非安全上下文） ──
+  // ── 复制命令：clipboard API → execCommand → 自动选中（多级降级） ──
+  // iframe 沙箱/权限策略可能拒绝 clipboard 写（opaque origin 或 Permissions-Policy），
+  // 最终兜底用 Selection 自动选中命令文本，提示用户手动 Ctrl+C——选择不需要权限，必然可达
   function copyCommand() {
     var text = root.querySelector(".op-sub-text").textContent || "";
     if (!text) return;
-    var done = function (ok) {
-      var btn = root.querySelector(".op-copy");
-      if (!btn) return;
-      btn.classList.toggle("copied", ok);
-      btn.textContent = ok ? "✓" : "✗";
-      setTimeout(function () {
-        btn.classList.remove("copied");
-        btn.textContent = "⧉";
-      }, 1200);
-    };
     if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+      navigator.clipboard.writeText(text).then(function () { doneCopy(true); }, function () { selectAndHint(); });
       return;
     }
+    if (execCopy(text)) { doneCopy(true); return; }
+    selectAndHint();
+  }
+
+  function execCopy(text) {
     var ta = document.createElement("textarea");
     ta.value = text;
     ta.style.position = "fixed";
@@ -241,7 +238,42 @@
     var ok = false;
     try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
     document.body.removeChild(ta);
-    done(ok);
+    return ok;
+  }
+
+  // 选中命令文本 + 按钮提示手动复制（不依赖 clipboard 权限）
+  function selectAndHint() {
+    var el = root.querySelector(".op-sub-text");
+    if (el) {
+      try {
+        var range = document.createRange();
+        range.selectNodeContents(el);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch (e) { /* ignore */ }
+    }
+    var btn = root.querySelector(".op-copy");
+    if (!btn) return;
+    btn.classList.add("copied");
+    btn.textContent = "已选中";
+    btn.title = "命令已选中，按 Ctrl+C 复制";
+    setTimeout(function () {
+      btn.classList.remove("copied");
+      btn.textContent = "⧉";
+      btn.title = "复制命令";
+    }, 4000);
+  }
+
+  function doneCopy(ok) {
+    var btn = root.querySelector(".op-copy");
+    if (!btn) return;
+    btn.classList.toggle("copied", ok);
+    btn.textContent = ok ? "✓" : "✗";
+    setTimeout(function () {
+      btn.classList.remove("copied");
+      btn.textContent = "⧉";
+    }, 1200);
   }
 
   function patchText(sel, text) {

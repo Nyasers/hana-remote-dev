@@ -154,6 +154,7 @@ function kindForTool(tool) {
  * 完成态只落盘不驻内存：命令执行完即落盘，内存只留 in-flight operations Map。
  * @param {object} entry { tool, label, connId, connInstance, agentName, status, startedAt, durationMs, exitCode, summary, output, kind?, opRef? }
  *   entry.output - 完整输出（stdout/stderr），卡片详情展示；超长截断
+ *   entry.output - 完整输出（stdout/stderr），卡片详情展示；超长截断
  */
 export function recordHistory(entry) {
   const id = `h_${Date.now().toString(36)}_${++opCounter}`;
@@ -329,8 +330,8 @@ export function readOperation(id) {
  * Register a new in-flight operation.
  * @param {object} opts
  * @param {string} opts.connId - connection alias / profileId / pool key
- * @param {string} [opts.connInstance] - connection instance id (batch marker;
- *   distinguishes reconnects that share the same pool key)
+ * @param {string} [opts.connInstance] - connection id (HRD_xxx / HRD_x_...);
+ *   panel groups operations by this id
  * @param {string} opts.kind - "exec" | "copy" | ...
  * @param {string} opts.label - human-readable description
  * @param {string} [opts.agentName] - Agent 显示名（卡片 {name} 占位符）

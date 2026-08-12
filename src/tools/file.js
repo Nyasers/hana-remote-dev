@@ -411,7 +411,7 @@ async function withOperation({ connId, kind, label, kill, agentName, stream = fa
   const rd = requireRuntime();
   let killed = false;
   // 连接实例 id：在连接存活时取（操作结束自动释放后 instanceOf 会落空），
-  // 随返回值带给 rec，保证历史批次按当时实例分组（conn_N 而非 profile id）。
+  // 随返回值带给 rec，保证历史批次按当时连接标识分组（HRD_xxx / HRD_x_...）。
   const connInstance = connId ? rd.sshClient.instanceOf(connId) : null;
   const opId = rd.operations.startOperation({
     connId,

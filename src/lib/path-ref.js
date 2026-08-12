@@ -49,7 +49,7 @@ export async function ensureConnection(connRef, { store, session = false }) {
   if (session) {
     const profile = store.get(connRef);
     if (!profile) {
-      // connRef 可能是池 key（session key / conn_N）：尝试直接命中
+      // connRef 可能是池 key（session key / 瞬态实例 id）：尝试直接命中
       const existingKey = resolveConnectionKey(connRef);
       if (existingKey) return existingKey;
       throw new Error(`unknown connection: ${connRef}`);
