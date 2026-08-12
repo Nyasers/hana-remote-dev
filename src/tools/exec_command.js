@@ -82,12 +82,11 @@ export async function execute(input, ctx) {
         onClose: (info) => {
           if (info.sessionId !== sessionId) return;
           const live = runtimeHolder.current;
-          // 输出尾部拼进 summary：断开/结束后历史记录里能看到会话最终输出
-          //（类似 subagent 返回结果，避免输出只活在会话卡里）。
-          const tail = info.outputTail ? `\n\n── 输出尾部 ──\n${info.outputTail}` : "";
           // 完整输出 = session 日志文件全文（增量落盘的完整会话记录，含终端
           // 记录与结局段；onClose 时文件已 finalize）。卡片「完整输出」展开
           // 与 session 文件内容一致；超长由 updateHistory 截断。
+          // summary 规范：状态摘要（会话结束/终止/断开原因）保留——与操作
+          // 语义一致；输出尾部统一收 output（输出区），不再拼进 summary。
           const logPath = live.sshClient?.getSessionLogPath?.(info.sessionId) || null;
           let output = "";
           if (logPath) {
@@ -102,14 +101,14 @@ export async function execute(input, ctx) {
               status: "ok",
               exitCode: info.exitCode,
               durationMs: info.durationMs,
-              summary: `会话结束 (exit ${info.exitCode})${tail}`,
+              summary: `会话结束 (exit ${info.exitCode})`,
               output,
             });
           } else if (info.how === "killed") {
             rd.operations.updateHistory(ttyHistId, {
               status: "killed",
               durationMs: info.durationMs,
-              summary: `会话已终止${tail}`,
+              summary: "会话已终止",
               output,
             });
           } else if (info.how === "disconnect") {
@@ -117,7 +116,7 @@ export async function execute(input, ctx) {
               status: "interrupted",
               reason: "disconnect",
               durationMs: info.durationMs,
-              summary: `已断开：会话终止${tail}`,
+              summary: "已断开：会话终止",
               output,
             });
           } else {
@@ -125,7 +124,7 @@ export async function execute(input, ctx) {
               status: "interrupted",
               reason: "lost",
               durationMs: info.durationMs,
-              summary: `会话中断${tail}`,
+              summary: "会话中断",
               output,
             });
           }
