@@ -1,4 +1,4 @@
-import { appendEventLog, eventTs } from "./session-log.js";
+import { tsNow } from "./session-log.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -23,8 +23,9 @@ const operations = (__G.operations ??= new Map());
 const listeners = (__G.listeners ??= new Set());
 
 // 操作日志落盘目录（logs 根目录；null = 不落盘）。由 install 注入，
-// 每次 recordHistory / updateHistory 追加一行 logs/operations/<date>.md，
-// 并写完整 JSON 记录 logs/ops/<date>/<opId>.json（插件重启后卡片按 opId 从文件读回）。
+// 每次 recordHistory / updateHistory 追加一行 events/<date>.jsonl（type="op"，
+// 按 opId 解码的起始日期落盘），取代旧 ops/<date>/<opId>.json 散文件与
+// operations/<date>.md 摘要行；读取侧从事件流折叠出终态。
 // 注意：loadBundle() 每次 new Function 都是新闭包（index.js 顶层 default 与 routes/card.js
 // 各一次），opLogDir 必须像 operations 一样挂 __G 全局共享，否则 route 侧
 // getHistory 读盘时拿到 null → 卡片 404「操作记录不存在」。
@@ -32,7 +33,7 @@ export function setOperationLogDir(dir) {
   __G.opLogDir = dir || null;
 }
 
-// 磁盘操作记录保留天数（超过自动清理；完成态不驻内存，磁盘按天归档）
+// 事件流（events/*.jsonl）保留天数（超过自动清理；完成态不驻内存，磁盘按天滚动）
 const OP_RECORD_DAYS = 30;
 
 function formatLocalDate(d) {
@@ -51,36 +52,36 @@ function opDateDir(id) {
   return formatLocalDate(new Date(ms));
 }
 
-/** 完整 JSON 落盘：主记录 + opRef 双写（旧卡片 URL 用的是进行时 op_xxx，查得到） */
-function persistRecord(record) {
+/** 操作事件落盘：events/<起始日期>.jsonl 追加一行（type="op"）。
+ *  final=false 为创建行（tty 进行中），final=true 为终局/结局行；读取折叠末行胜出。
+ *  按 opId 解码的起始日期落盘：创建与结局同文件，跨天操作不拆包。 */
+function persistRecord(record, { final = true } = {}) {
   if (!__G.opLogDir || !record || !record.opId) return;
   try {
-    const dir = path.join(__G.opLogDir, "ops", opDateDir(record.opId) || formatLocalDate(new Date()));
-    fs.mkdirSync(dir, { recursive: true });
-    const json = JSON.stringify(record);
-    fs.writeFileSync(path.join(dir, `${record.opId}.json`), json, "utf8");
-    if (record.opRef && record.opRef !== record.opId) {
-      fs.writeFileSync(path.join(dir, `${record.opRef}.json`), json, "utf8");
-    }
+    const date = opDateDir(record.opId) || formatLocalDate(new Date());
+    const p = path.join(__G.opLogDir, "events", `${date}.jsonl`);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const line = { v: 1, ts: tsNow(), type: "op", ...record, final };
+    fs.appendFileSync(p, `${JSON.stringify(line)}\n`, "utf8");
     pruneOpRecords();
   } catch {
     /* best effort：落盘失败不影响调用方 */
   }
 }
 
-/** 清理超过保留天数的 ops 日期目录 */
+/** 清理超过保留天数（30 天）的 events 日期文件（操作/连接/配置事件同流，统一周期） */
 function pruneOpRecords() {
   try {
-    const root = path.join(__G.opLogDir, "ops");
+    const root = path.join(__G.opLogDir, "events");
     if (!fs.existsSync(root)) return;
     const cutoff = Date.now() - OP_RECORD_DAYS * 86400000;
     for (const name of fs.readdirSync(root)) {
       const p = path.join(root, name);
       try {
         const st = fs.statSync(p);
-        if (st.isDirectory() && st.mtimeMs < cutoff) fs.rmSync(p, { recursive: true, force: true });
+        if (st.isFile() && st.mtimeMs < cutoff) fs.unlinkSync(p);
       } catch {
-        /* 单个目录清理失败不阻断 */
+        /* 单个文件清理失败不阻断 */
       }
     }
   } catch {
@@ -88,27 +89,78 @@ function pruneOpRecords() {
   }
 }
 
-/** 从磁盘读回完整操作记录（完成态不驻内存，卡片/面板查询一律走这里） */
+/** 从事件流折叠出操作终态（同 opId 末行胜出；去掉事件行附加字段）。 */
+function foldOpLines(file, id) {
+  let found = null;
+  try {
+    const lines = fs.readFileSync(file, "utf8").split("\n");
+    for (const l of lines) {
+      if (!l.trim()) continue;
+      try {
+        const o = JSON.parse(l);
+        if (o.type !== "op") continue;
+        if (o.opId === id || o.opRef === id) {
+          if (!found || o.final) found = o;
+        }
+      } catch {
+        /* 单行损坏跳过 */
+      }
+    }
+  } catch {
+    return null;
+  }
+  return found ? toRecord(found) : null;
+}
+
+/** 事件行 → 操作记录（剥离 v/ts/type/final 事件附加字段，与旧 ops json 结构一致）。 */
+function toRecord(o) {
+  const { v, ts, type, final, ...rec } = o;
+  return rec;
+}
+
+/** 从磁盘读回操作终态：新格式事件流优先，旧 ops/<date>/<opId>.json 回退。 */
 function readHistoryFromDisk(id) {
   if (!__G.opLogDir || !id) return null;
   try {
     const dir = opDateDir(id);
     if (dir) {
-      const p = path.join(__G.opLogDir, "ops", dir, `${id}.json`);
-      return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, "utf8")) : null;
+      const p = path.join(__G.opLogDir, "events", `${dir}.jsonl`);
+      if (fs.existsSync(p)) {
+        const found = foldOpLines(p, id);
+        if (found) return found;
+      }
     }
-    // 日期解析失败兜底：扫最近 OP_RECORD_DAYS 天的目录
+    // 日期解析失败兜底：扫最近 OP_RECORD_DAYS 天的事件文件
+    const eventsDir = path.join(__G.opLogDir, "events");
+    if (fs.existsSync(eventsDir)) {
+      const cutoff = Date.now() - OP_RECORD_DAYS * 86400000;
+      for (const name of fs.readdirSync(eventsDir).sort().reverse()) {
+        try {
+          if (fs.statSync(path.join(eventsDir, name)).mtimeMs < cutoff) continue;
+        } catch {
+          continue;
+        }
+        const found = foldOpLines(path.join(eventsDir, name), id);
+        if (found) return found;
+      }
+    }
+    // 旧格式回退：ops/<date>/<opId>.json（存量兼容）
     const root = path.join(__G.opLogDir, "ops");
-    if (!fs.existsSync(root)) return null;
-    const cutoff = Date.now() - OP_RECORD_DAYS * 86400000;
-    for (const name of fs.readdirSync(root).sort().reverse()) {
-      const dirPath = path.join(root, name);
-      try {
-        if (fs.statSync(dirPath).mtimeMs < cutoff) continue;
-        const p = path.join(dirPath, `${id}.json`);
+    if (fs.existsSync(root)) {
+      if (dir) {
+        const p = path.join(root, dir, `${id}.json`);
         if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, "utf8"));
-      } catch {
-        /* skip */
+      }
+      const cutoff = Date.now() - OP_RECORD_DAYS * 86400000;
+      for (const name of fs.readdirSync(root).sort().reverse()) {
+        const dirPath = path.join(root, name);
+        try {
+          if (fs.statSync(dirPath).mtimeMs < cutoff) continue;
+          const p = path.join(dirPath, `${id}.json`);
+          if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, "utf8"));
+        } catch {
+          /* skip */
+        }
       }
     }
     return null;
@@ -117,17 +169,7 @@ function readHistoryFromDisk(id) {
   }
 }
 
-function appendOpLogLine(line) {
-  if (!__G.opLogDir) return;
-  appendEventLog(__G.opLogDir, "operations", line);
-}
-
-// label 可能含管道符（命令/路径），替换为 ¦ 保列对齐
-const clean = (s) => String(s ?? "").replace(/\|/g, "¦");
-function opLogLine(entry) {
-  const d = entry.durationMs ?? 0;
-  return `${eventTs()} | ${clean(entry.tool)} ${entry.status || "ok"} | ${clean(entry.connId) || "-"} | ${clean(entry.label)} | ${d}ms${entry.exitCode != null ? ` | exit ${entry.exitCode}` : ""}`;
-}
+// label 可能含管道符——事件流 JSON 化后不再需要清洗（JSON.stringify 转义），退役
 
 // 卡片详情完整输出上限（stdout/stderr，超出截断；完整记录在 session 日志落盘）
 const OUTPUT_MAX_CHARS = 64 * 1024;
@@ -176,9 +218,11 @@ export function recordHistory(entry) {
     output: String(entry.output || "").slice(0, OUTPUT_MAX_CHARS),
     // 关联 in-flight op（wrapTool 的 startOperation opId）；卡片按此查询完成态
     opRef: entry.opRef || null,
+    // 事件→回放血缘：exec 类由 exec_command 注入；非 exec 为 null
+    sessionId: entry.sessionId || null,
   };
-  appendOpLogLine(opLogLine(entry));
-  persistRecord(record);
+  // running 态 = 创建行（tty 后续 updateHistory 补结局行）；其余 = 终局单行
+  persistRecord(record, { final: record.status !== "running" });
   notifyChange(id);
   return id;
 }
@@ -197,45 +241,61 @@ export function updateHistory(id, patch) {
   if (patch.output !== undefined) {
     patch.output = String(patch.output || "").slice(0, OUTPUT_MAX_CHARS);
   }
-  Object.assign(rec, patch);
-  // tty 会话结局回写：补一条 closed 行（启动行的状态是会话创建，非终局）
-  appendOpLogLine(opLogLine({
-    tool: rec.tool,
-    status: `${rec.status} (closed)`,
-    connId: rec.connId,
-    label: rec.label,
-    durationMs: rec.durationMs,
-    exitCode: rec.exitCode,
-  }));
-  persistRecord(rec); // 结局回写同步到磁盘（旧 tty 卡片读到终局而非启动态）
+  // 结局事件追加（append-only，不 rewrite）：同 opId 新行 final=true，末行胜出折叠
+  persistRecord({ ...rec, ...patch }, { final: true });
   notifyChange(id);
   return true;
 }
 
-/** List finished operations (newest first). 完成态只落盘：从磁盘倒序读取。 */
+/** List finished operations (newest first). 完成态只落盘：从事件流折叠读取（旧 ops 目录兜底）。 */
 export function listHistory(limit = 50) {
   if (!__G.opLogDir) return [];
   const out = [];
   try {
-    const root = path.join(__G.opLogDir, "ops");
-    if (!fs.existsSync(root)) return out;
-    // 日期目录倒序（新→旧）；目录内只取主记录（跳过 op_ 双写副本），文件名倒序 ≈ 时间倒序
-    for (const dir of fs.readdirSync(root).sort().reverse()) {
-      const dirPath = path.join(root, dir);
-      let files;
-      try {
-        files = fs.readdirSync(dirPath);
-      } catch {
-        continue;
-      }
-      const mains = files.filter((f) => f.startsWith("h_") && f.endsWith(".json")).sort().reverse();
-      for (const f of mains) {
-        try {
-          out.push(JSON.parse(fs.readFileSync(path.join(dirPath, f), "utf8")));
-        } catch {
-          /* 单条损坏跳过 */
+    // 新格式：events/*.jsonl 倒序（日期新→旧），单文件内折叠 + startedAt 降序
+    const eventsDir = path.join(__G.opLogDir, "events");
+    if (fs.existsSync(eventsDir)) {
+      const files = fs.readdirSync(eventsDir).filter((f) => f.endsWith(".jsonl")).sort().reverse();
+      for (const f of files) {
+        const map = new Map();
+        const lines = fs.readFileSync(path.join(eventsDir, f), "utf8").split("\n");
+        for (const l of lines) {
+          if (!l.trim()) continue;
+          try {
+            const o = JSON.parse(l);
+            if (o.type !== "op" || !o.opId) continue;
+            map.set(o.opId, toRecord(o)); // 末行胜出（结局行在创建行之后）
+          } catch {
+            /* 单条损坏跳过 */
+          }
         }
-        if (out.length >= limit) return out;
+        const arr = [...map.values()].sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")));
+        for (const rec of arr) {
+          out.push(rec);
+          if (out.length >= limit) return out;
+        }
+      }
+    }
+    // 旧格式兜底：ops 日期目录（存量文件，含 opRef 双写副本），文件名倒序 ≈ 时间倒序
+    const root = path.join(__G.opLogDir, "ops");
+    if (fs.existsSync(root)) {
+      for (const dir of fs.readdirSync(root).sort().reverse()) {
+        const dirPath = path.join(root, dir);
+        let files;
+        try {
+          files = fs.readdirSync(dirPath);
+        } catch {
+          continue;
+        }
+        const mains = files.filter((f) => f.startsWith("h_") && f.endsWith(".json")).sort().reverse();
+        for (const f of mains) {
+          try {
+            out.push(JSON.parse(fs.readFileSync(path.join(dirPath, f), "utf8")));
+          } catch {
+            /* 单条损坏跳过 */
+          }
+          if (out.length >= limit) return out;
+        }
       }
     }
   } catch {

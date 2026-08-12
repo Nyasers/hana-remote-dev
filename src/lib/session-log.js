@@ -336,7 +336,7 @@ const HOW_TEXT = {
  * @returns {object|null} logger（初始化失败返回 null）：
  *   { filePath, appendOutput(text), appendInput(chars), finalize(info) }
  */
-export function createSessionLogger({ dir, sessionId, connId, command, startedAt, maxFileBytes = SESSION_FILE_MAX_BYTES, kind = "tty" }) {
+export function createSessionLogger({ dir, sessionId, connId, command, startedAt, maxFileBytes = SESSION_FILE_MAX_BYTES, kind = "tty", opId = null }) {
   let filePath;
   let headBytes = 0;
   try {
@@ -349,6 +349,7 @@ export function createSessionLogger({ dir, sessionId, connId, command, startedAt
       `# HRD 会话记录：${sessionId}`,
       "",
       `- 会话: ${sessionId}`,
+      ...(opId ? [`- 操作: ${opId}`] : []),
       `- 连接: ${connId}`,
       `- 命令: \`${String(command || "").replace(/`/g, "\\`")}\``,
       `- 类型: ${kind === "exec" ? "exec（一次性命令）" : "tty（交互会话）"}`,

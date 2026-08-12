@@ -28,8 +28,11 @@ console.log("__G keys (expect no history):", Object.keys(globalThis.__hrd_ops_st
 // 3. 磁盘文件检查
 const d = new Date();
 const dateDir = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-const opsDir = path.join(tmp, "ops", dateDir);
-console.log("disk files:", fs.readdirSync(opsDir));
+// 3. 事件流文件检查（新格式：events/<date>.jsonl 一行一事件）
+const evtFile = path.join(tmp, "events", dateDir + ".jsonl");
+const evtLines = fs.readFileSync(evtFile, "utf8").trim().split("\n");
+console.log("events file:", evtFile);
+console.log("event lines:", evtLines.length, "| all valid json:", evtLines.every((l) => JSON.parse(l).v === 1));
 
 // 4. 直接读盘（模拟任何时刻查询，无需内存）
 const g1 = mod.getHistory(hid1);
@@ -48,6 +51,16 @@ console.log("updateHistory ok:", patchOk, "->", g3 && { status: g3.status, reaso
 
 // 7. 未知 id
 console.log("unknown:", mod.getHistory("h_nonexistent"), "| list empty dir:", mod.listHistory().length >= 2);
+
+// 8. tty 两段式：创建行（running, final=false）+ 结局行（追加, final=true），折叠返回终态
+const ttyId = mod.recordHistory({ tool: "exec_command", kind: "tty", label: "bash", connId: "Home", agentName: "Hanako", status: "running", sessionId: "HRD_test_1" });
+const ttyLines = fs.readFileSync(evtFile, "utf8").trim().split("\n").filter((l) => JSON.parse(l).opId === ttyId);
+console.log("tty 创建行 final=false:", ttyLines.length === 1 && JSON.parse(ttyLines[0]).final === false);
+mod.updateHistory(ttyId, { status: "closed", exitCode: 0, durationMs: 3000, output: "done", sessionId: "HRD_test_1" });
+const g4 = mod.getHistory(ttyId);
+console.log("tty 结局折叠:", g4 && { status: g4.status, exitCode: g4.exitCode, sessionId: g4.sessionId });
+const ttyLines2 = fs.readFileSync(evtFile, "utf8").trim().split("\n").filter((l) => JSON.parse(l).opId === ttyId);
+console.log("tty 两行（创建+结局）:", ttyLines2.length === 2, "| final flags:", ttyLines2.map((l) => JSON.parse(l).final));
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("PASS");

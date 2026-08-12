@@ -34,8 +34,8 @@ console.log("routeSide getHistory(opRef):", snapOp ? { opId: snapOp.opId, opRef:
 // route 侧面板列表
 console.log("routeSide listHistory:", routeSide.listHistory().map((e) => e.label));
 
-// 磁盘文件确认
-console.log("disk files:", fs.readdirSync(path.join(tmp, "ops", dateDir)));
+// 磁盘文件确认（新格式：events/<date>.jsonl）
+console.log("disk files:", fs.readdirSync(path.join(tmp, "events")));
 
 // 双闭包下 updateHistory（route 侧调用）
 const up = routeSide.updateHistory(hid, { status: "interrupted", reason: "lost" });

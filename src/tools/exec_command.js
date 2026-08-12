@@ -63,6 +63,7 @@ export async function execute(input, ctx) {
   let output = ""; // 完整输出（stdout/stderr + 结局标注）：卡片详情展示 + result.details 供调用方读取
   let ttyHistId = null; // tty 会话：创建时记录，关闭时按结局回写同一条
   let opId = null; // 非 tty 执行：startOperation 的 opId（函数级，供 catch/finally 注入卡片）
+  let execSessionId = null; // 一次性 exec 的会话 id（血缘：op 事件 → 回放，与 writeCommandLog 共用）
   let catchRecorded = false; // catch 路径已自行 recordHistory（连接失败等 op 创建前抛错），外层 finally 跳过
   let streamHandled = false; // stream 模式：落盘/释放由后台执行自管，finally 跳过
 
@@ -199,6 +200,7 @@ export async function execute(input, ctx) {
         durationMs: Date.now() - started,
         exitCode: null,
         summary,
+        sessionId, // 血缘：tty 事件 → 回放
       });
       return attachCard(
         {
@@ -499,7 +501,11 @@ export async function execute(input, ctx) {
     // tty 会话例外：由 tty 分支自行记录（status=ok + 会话创建），结局在
     // 会话关闭时通过 updateHistory 回写——单一收口不适用（结局异步）。
     if (!ttyHistId && !catchRecorded && !streamHandled) {
-      rd.operations.recordHistory({
+      if (execResult) {
+        // 血缘：一次性 exec 的 sessionId 提前生成，op 事件与回放共用（op → 回放可寻址）
+        execSessionId = rd.sshClient.nextSessionId();
+      }
+      const hid = rd.operations.recordHistory({
       tool: "exec_command",
       label: input.command,
       connId,
@@ -513,9 +519,10 @@ export async function execute(input, ctx) {
       summary,
       output,
       opRef: opId,
+      sessionId: execSessionId,
     });
       // 一次性命令记录：执行已发生（execResult 非空）才落盘；连接失败等未执行场景不记。
-      writeCommandLog(rd, input, connId, execResult, { status, reason, started });
+      writeCommandLog(rd, input, connId, execResult, { status, reason, started }, execSessionId, hid);
       // 惰性日切归档（高频路径触发）：昨天及更早目录就地打包；无定时器，跨天后首次活动即归档
       try {
         rd.sshClient.rollSessionLogs?.();
@@ -534,19 +541,22 @@ function requireRuntime(ctx) {
 }
 
 /** 一次性命令记录：命令执行完成后整段落盘（session/<yyyy-mm-dd>/<id>.md，与 tty 会话同构统一模板）。
- *  记录完整 stdout/stderr 与结局；失败静默（best effort，不影响命令结果）。 */
-function writeCommandLog(rd, input, connId, result, { status, reason, started }) {
+ *  记录完整 stdout/stderr 与结局；失败静默（best effort，不影响命令结果）。
+ * @param {string} [sessionId] - 外部生成的会话 id（血缘复用）；缺省内部生成
+ * @param {string} [opId] - 操作记录 id（回放头部互引，op → 回放双向可寻址） */
+function writeCommandLog(rd, input, connId, result, { status, reason, started }, sessionId, opId) {
   if (!rd.sessionLogDir || !rd.sessionLog || !connId || !result) return;
   try {
-    const sessionId = rd.sshClient.nextSessionId();
+    const sid = sessionId || rd.sshClient.nextSessionId();
     const startedAt = new Date(started);
     const logger = rd.sessionLog.createSessionLogger({
       dir: rd.sessionLogDir,
-      sessionId,
+      sessionId: sid,
       connId,
       command: String(input.command),
       startedAt,
       kind: "exec",
+      opId: opId || null,
     });
     if (!logger) return;
     const out = [];
