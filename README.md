@@ -34,35 +34,7 @@ npm install
 npm run package   # 构建 → releases/hana-remote-dev-<version>.zip（附 .sha256）
 ```
 
-## 使用
-
-所有远程操作经 `hrd` 协议端点（method 必须显式传）：
-
-```
-# 首次录入配置（纯保存，不连接验证；凭据只出现一次，加密落库）
-hrd(method="POST", uri="HRD://connection/my-server", body={action: "save", host, username, password})
-
-# 执行命令（connectionId 必填，自动建连）
-exec_command(connectionId: "my-server", command: "ls -la /var/log")
-
-# 读写远程文件（路径带别名前缀）
-read(path: "my-server:/var/log/syslog")
-write(path: "my-server:/etc/nginx/conf.d/default.conf", content: "...")
-
-# 交互式会话
-exec_command(connectionId: "my-server", command: "bash -l", tty: true) → sessionId
-write_stdin(sessionId, chars)
-```
-
-### 会话结束自动唤醒
-
-tty 会话结束后，插件向 Agent 注入唤醒信标（`[Use tool: hana-remote-dev_hrd(method="GET", uri="HRD://session/<id>")]`），
-Agent 据此拉取会话元数据与记录。判定优先级：
-
-1. **显式意图**（推荐）：`exec_command(..., tty: true, wakeOnExit: true)` 必唤醒；`wakeOnExit: false` 必不唤醒
-2. **默认兑底**：未声明时，正常 exit 且会话 ≥3s 才唤醒（瞬时交互不打扰）；异常/干预结局（disconnect/lost/killed）始终唤醒
-
-宿主回合进行中（session_busy）时信标不丢弃：每 3s 重试，5 分钟窗口内注入成功即止，窗口耗尽留痕（`%TMP%\hrd-wake.log`）。
+> 本插件仅 Agent 可调用（无人类操作界面）；工具调用契约见 `HRD://guide`（按需读取）与仓库根 `AGENTS.md`。
 
 ## 配置
 

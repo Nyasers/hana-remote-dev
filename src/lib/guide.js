@@ -49,6 +49,7 @@ HRD 资源协议表：status/connection/session/guide。
 执行约定：exec_command / stream / tty 交互。
 
 - \`exec_command(connectionId, command)\` 阻塞执行，支持 \`workdir\` / \`timeout\`；\`stream: true\` 流式（卡片实时输出，完成时宿主 deferred 自动投递结果）；\`tty: true\` 交互会话
+- \`wakeOnExit\`（tty / stream 通用）：显式意图——\`true\` 必唤醒，\`false\` 只记录不唤醒（结局照常落盘）；不传时默认策略：正常 exit 且会话 ≥3s 才唤醒（瞬时交互不打扰），异常/干预结局（disconnect/lost/killed）始终唤醒
 - ⚠️ **tty 是 pty 执行传入的命令：命令执行完会话即结束**。\`echo\` 这类短命令瞬间退出，\`write_stdin\` 随即报 \`No active session\`——不是故障，是会话已结束。要开交互 shell 用**长驻命令**：\`exec_command(connectionId, command: "bash", tty: true)\`（交互脚本同理，如 \`python3 -i\`）
 - \`write_stdin(sessionId, chars)\` 喂输入并回读输出；会话空闲超时自动终止，断连级联终止
 - ⚠️ exec 通道不带交互 stdin：多行 heredoc 命令（\`cat <<EOF\` 等）不可靠，先 \`write\` 落盘脚本再执行，或改用 tty 会话
