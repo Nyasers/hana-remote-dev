@@ -68,7 +68,7 @@ export function dayStamp(d = new Date()) {
   return eventTs(d).slice(0, 10);
 }
 
-/** 会话记录文件路径：session/<yyyy-mm-dd>/<sessionId>.md（按日目录 + 纯 ID 文件名）。 */
+/** 会话记录文件路径：sessions/<yyyy-mm-dd>/<sessionId>.md（按日目录 + 纯 ID 文件名）。 */
 export function sessionFileName(sessionId, startedAt = new Date()) {
   const d = startedAt instanceof Date ? startedAt : new Date(startedAt);
   return path.join(dayStamp(d), `${sessionId}.md`);
@@ -158,7 +158,7 @@ function tarGz(entries) {
   return zlib.gzipSync(Buffer.concat(chunks));
 }
 
-/** 归档一组会话记录为 tar.gz（就地：落在 session 目录内，与活跃日期目录同名不同后缀）。 */
+/** 归档一组会话记录为 tar.gz（就地：落在 sessions 目录内，与活跃日期目录同名不同后缀）。 */
 function archiveGroup(dir, g) {
   const entries = g.files.map((f) => ({
     name: g.dirPath ? `${g.name}/${path.basename(f)}` : path.basename(f),
@@ -225,7 +225,7 @@ export function extractTarGz(gzBuf, name) {
 const SESSION_RETENTION_DAYS = 1;
 
 /** 清理会话日志：
- *  时间主策略：日期目录早于保留窗口（默认 1 天，昨日归档）且无活跃引用 → 就地打包 session/<date>.tar.gz 后删除原目录；
+ *  时间主策略：日期目录早于保留窗口（默认 1 天，昨日归档）且无活跃引用 → 就地打包 sessions/<date>.tar.gz 后删除原目录；
  *  空间兜底：窗口内日志总字节仍超 maxBytes → 继续归档最旧（0 = 空间不设限）；
  *  归档有界：tar.gz 累积超 maxBytes → 删除最旧归档。
  * @param {string} dir - session 日志目录
@@ -327,7 +327,7 @@ const HOW_TEXT = {
 /**
  * 创建会话日志器。
  * @param {object} opts
- * @param {string} opts.dir - session 日志目录（dataDir/logs/session）
+ * @param {string} opts.dir - 会话日志目录（dataDir/logs/sessions）
  * @param {string} opts.sessionId
  * @param {string} opts.connId
  * @param {string} opts.command
@@ -340,7 +340,7 @@ export function createSessionLogger({ dir, sessionId, connId, command, startedAt
   let filePath;
   let headBytes = 0;
   try {
-    // 文件名按日编排：session/<yyyy-mm-dd>/<sessionId>.md
+    // 文件名按日编排：sessions/<yyyy-mm-dd>/<sessionId>.md
     filePath = path.join(dir, sessionFileName(sessionId, startedAt));
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     // 提示符由远端 shell 自己渲染（PS1 回显自带，如 hanako@host:~$），

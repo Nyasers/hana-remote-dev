@@ -846,7 +846,7 @@ const sessionKills = new Set(); // 用户主动 kill 的会话（close 时据此
 const SESSION_BUFFER_LIMIT = 1024 * 1024; // 1MB cap
 
 // sessionId 无状态生成：时间戳(base36) + 随机 3 位，不带前缀（信标/URI/工具参数直接复用，
-// 协议名 HRD:// 与目录 session/ 已自解释）。不依赖模块级计数器，
+// 协议名 HRD:// 与目录 sessions/ 已自解释）。不依赖模块级计数器，
 // 插件重载/重启后不会重置归零，也就不会与历史记录文件（<sessionId>.md）冲突。
 export function nextSessionId() {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
@@ -877,7 +877,7 @@ export function evictHistory(map, maxEntries, maxTotalBytes = Infinity) {
   }
 }
 
-// 会话日志目录（dataDir/logs/session）：由 bundle-entry install 注入；为 null 时不写日志。
+// 会话日志目录（dataDir/logs/sessions）：由 bundle-entry install 注入；为 null 时不写日志。
 let sessionLogDir = null;
 // 事件日志目录（dataDir/logs，connection/config）：由 bundle-entry 注入。
 let eventLogDir = null;

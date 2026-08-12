@@ -120,13 +120,13 @@ section("guide 手册（索引 / 章节 / 未知章节）");
 // ---------- resolveSessionDetail ----------
 section("resolveSessionDetail（会话记录定位）");
 {
-  check("detail 白名单防穿越", resolveSessionDetail("..%2F..%2Fx", "D:/data/logs") === null && resolveSessionDetail("abc123", "D:/data/logs")?.replaceAll("\\", "/").endsWith("logs/session/abc123.md"));
+  check("detail 白名单防穿越", resolveSessionDetail("..%2F..%2Fx", "D:/data/logs") === null && resolveSessionDetail("abc123", "D:/data/logs")?.replaceAll("\\", "/").endsWith("logs/sessions/abc123.md"));
   check("detail O(1) 解码定位", (() => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-detail-"));
     const sid = `${Date.now().toString(36)}xyz`;
     const t = sessionLog.sessionIdTime(sid);
     const rel = sessionLog.sessionFileName(sid, t);
-    const p = path.join(dir, "session", rel);
+    const p = path.join(dir, "sessions", rel);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, "x", "utf8");
     const hit = resolveSessionDetail(sid, dir);
@@ -136,12 +136,12 @@ section("resolveSessionDetail（会话记录定位）");
   check("detail 兜底扫描日期目录", (() => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-detail2-"));
     const sid = "xyz123abc";
-    const sub = path.join(dir, "session", "2026-08-11");
+    const sub = path.join(dir, "sessions", "2026-08-11");
     fs.mkdirSync(sub, { recursive: true });
     fs.writeFileSync(path.join(sub, `${sid}.md`), "x", "utf8");
     const hit = resolveSessionDetail(sid, dir);
     fs.rmSync(dir, { recursive: true, force: true });
-    return hit?.replaceAll("\\", "/").endsWith(`session/2026-08-11/${sid}.md`);
+    return hit?.replaceAll("\\", "/").endsWith(`sessions/2026-08-11/${sid}.md`);
   })());
 }
 
@@ -214,7 +214,7 @@ section("cleanupSessionLogs（昨日归档 + 空间兜底 + 活跃保护）");
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   };
   const mk = (root, group, files) => {
-    const g = path.join(root, "session", group);
+    const g = path.join(root, "sessions", group);
     for (const f of files) {
       fs.mkdirSync(path.dirname(path.join(g, f)), { recursive: true });
       fs.writeFileSync(path.join(g, f), "x".repeat(500), "utf8");
@@ -225,12 +225,12 @@ section("cleanupSessionLogs（昨日归档 + 空间兜底 + 活跃保护）");
   mk(root, day(2), ["a.md", "b.md"]);
   mk(root, day(1), ["c.md"]);
   mk(root, day(0), ["d.md"]);
-  sessionLog.cleanupSessionLogs(path.join(root, "session"), { maxBytes: 0 });
-  check("昨日及更早归档删除", !fs.existsSync(path.join(root, "session", day(2))) && !fs.existsSync(path.join(root, "session", day(1))));
-  check("今天保留", fs.existsSync(path.join(root, "session", day(0), "d.md")));
-  check("归档就地生成 tar.gz", fs.readdirSync(path.join(root, "session")).some((f) => f.endsWith(".tar.gz")));
+  sessionLog.cleanupSessionLogs(path.join(root, "sessions"), { maxBytes: 0 });
+  check("昨日及更早归档删除", !fs.existsSync(path.join(root, "sessions", day(2))) && !fs.existsSync(path.join(root, "sessions", day(1))));
+  check("今天保留", fs.existsSync(path.join(root, "sessions", day(0), "d.md")));
+  check("归档就地生成 tar.gz", fs.readdirSync(path.join(root, "sessions")).some((f) => f.endsWith(".tar.gz")));
   // tar 读取侧：不解压列表 + 按需提取（直接定位昨日归档包）
-  const gzPath = path.join(root, "session", `${day(1)}.tar.gz`);
+  const gzPath = path.join(root, "sessions", `${day(1)}.tar.gz`);
   const entries = sessionLog.listTarGz(gzPath);
   check("列表含归档条目", entries.some((e) => e.name === `${day(1)}/c.md`));
   const hit = sessionLog.extractTarGz(gzPath, `${day(1)}/c.md`);
@@ -239,25 +239,25 @@ section("cleanupSessionLogs（昨日归档 + 空间兜底 + 活跃保护）");
   // 活跃引用保护：命中的组延迟归档，引用释放后归档
   const root2 = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean2-"));
   mk(root2, day(1), ["a.md"]);
-  const activePath = path.join(root2, "session", day(1), "a.md");
-  sessionLog.cleanupSessionLogs(path.join(root2, "session"), { maxBytes: 0, activePaths: new Set([activePath]) });
+  const activePath = path.join(root2, "sessions", day(1), "a.md");
+  sessionLog.cleanupSessionLogs(path.join(root2, "sessions"), { maxBytes: 0, activePaths: new Set([activePath]) });
   check("活跃引用的目录不归档", fs.existsSync(activePath));
-  sessionLog.cleanupSessionLogs(path.join(root2, "session"), { maxBytes: 0, activePaths: new Set() });
+  sessionLog.cleanupSessionLogs(path.join(root2, "sessions"), { maxBytes: 0, activePaths: new Set() });
   check("引用释放后归档", !fs.existsSync(activePath));
   // 空间兜底：窗口内超限 → 归档最旧
   const root3 = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean3-"));
   const mk3 = (group, bytes) => {
-    const g = path.join(root3, "session", group);
+    const g = path.join(root3, "sessions", group);
     fs.mkdirSync(g, { recursive: true });
     fs.writeFileSync(path.join(g, "x.md"), "x".repeat(bytes), "utf8");
   };
   mk3(day(1), 2000);
   mk3(day(0), 2000);
-  sessionLog.cleanupSessionLogs(path.join(root3, "session"), { maxBytes: 3000, retentionDays: 0 });
-  check("空间兜底归档最旧", !fs.existsSync(path.join(root3, "session", day(1))) && fs.existsSync(path.join(root3, "session", day(0), "x.md")));
+  sessionLog.cleanupSessionLogs(path.join(root3, "sessions"), { maxBytes: 3000, retentionDays: 0 });
+  check("空间兜底归档最旧", !fs.existsSync(path.join(root3, "sessions", day(1))) && fs.existsSync(path.join(root3, "sessions", day(0), "x.md")));
   // 归档有界：tar.gz 超配额 → 删最旧
   const root4 = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean4-"));
-  const gzDir = path.join(root4, "session");
+  const gzDir = path.join(root4, "sessions");
   fs.mkdirSync(gzDir, { recursive: true });
   fs.writeFileSync(path.join(gzDir, "old.tar.gz"), "x".repeat(3000), "utf8");
   fs.writeFileSync(path.join(gzDir, "new.tar.gz"), "x".repeat(3000), "utf8");

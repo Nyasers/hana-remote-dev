@@ -120,7 +120,7 @@ export function parseHrdUri(uri, method, body) {
  *  解码失败/时间漂移时兜底扫描日期目录；旧格式 <hh-mm-ss>.<id>.md 与平铺 <id>.md 兼容。 */
 export function resolveSessionDetail(id, logsDir) {
   if (!/^[A-Za-z0-9._-]+$/.test(String(id || ""))) return null;
-  const dir = path.join(logsDir, "session");
+  const dir = path.join(logsDir, "sessions");
   // 1) O(1)：id 解码时间戳 → 确定性路径
   const t = sessionLog.sessionIdTime(id);
   if (t) {
@@ -299,7 +299,7 @@ export function resolveArchivedSession(id, logsDir) {
   if (!/^[A-Za-z0-9._-]+$/.test(String(id || ""))) return null;
   const t = sessionLog.sessionIdTime(id);
   if (!t) return null;
-  const dir = path.join(logsDir, "session");
+  const dir = path.join(logsDir, "sessions");
   const gzPath = path.join(dir, `${sessionLog.dayStamp(t)}.tar.gz`);
   if (!fs.existsSync(gzPath)) return null;
   try {

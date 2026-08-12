@@ -540,7 +540,7 @@ function requireRuntime(ctx) {
   return ctx?._remoteDev ?? runtimeHolder.current;
 }
 
-/** 一次性命令记录：命令执行完成后整段落盘（session/<yyyy-mm-dd>/<id>.md，与 tty 会话同构统一模板）。
+/** 一次性命令记录：命令执行完成后整段落盘（sessions/<yyyy-mm-dd>/<id>.md，与 tty 会话同构统一模板）。
  *  记录完整 stdout/stderr 与结局；失败静默（best effort，不影响命令结果）。
  * @param {string} [sessionId] - 外部生成的会话 id（血缘复用）；缺省内部生成
  * @param {string} [opId] - 操作记录 id（回放头部互引，op → 回放双向可寻址） */

@@ -323,7 +323,7 @@ export async function install(ctx) {
   fs.mkdirSync(logsDir, { recursive: true });
   const runtime = {
     connectionStore, sshClient, pathRef, operations, errText, tree, wake, dataDir, logsDir, log, sessionLog,
-    sessionLogDir: path.join(logsDir, "session"),
+    sessionLogDir: path.join(logsDir, "sessions"),
     bus: ctx.bus ?? null,
     registerSessionFile: ctx.registerSessionFile ?? null,
   };
@@ -331,7 +331,7 @@ export async function install(ctx) {
   runtimeHolder.current = runtime;
 
   // 会话日志目录：tty 会话与一次性命令随运行落盘（agent 可经 HRD://sessions/ 读取）
-  setSessionLogDir(path.join(logsDir, "session"));
+  setSessionLogDir(path.join(logsDir, "sessions"));
   // 事件日志目录：统一事件流 events/（连接/配置/操作，type 字段分流）
   setEventLogDir(logsDir);
   // 操作日志目录：并入统一事件流（events/<date>.jsonl，type="op"）
