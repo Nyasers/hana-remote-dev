@@ -254,6 +254,9 @@ function buildHistoryEntry(toolName, input, started, result, err) {
       /* 解析失败保留原始引用（连接日志等仍可读） */
     }
   }
+  // connInstance：统一后实例 id = 连接 id（v0.9.2 定案），wrapper 兜底路径
+  // 在执行前无法查实例表，直接与解析后的 connId 同值，与 exec/file 双写一致。
+  const connInstance = connId ? String(connId) : null;
 
   // summary：仅错误摘要。成功路径的结果文本统一收进 output（卡片输出折叠区），
   // 不写进 summary——摘要行只承载错误提示（一眼可见）；description 由调用方
@@ -276,6 +279,7 @@ function buildHistoryEntry(toolName, input, started, result, err) {
     tool: toolName,
     label,
     connId: connId ? String(connId) : null,
+    connInstance,
     status: err ? "error" : "ok",
     startedAt: new Date(started).toISOString(),
     durationMs: Date.now() - started,

@@ -34,9 +34,11 @@ export async function execute(input, ctx) {
   const label = `${input.action} ${input.source}${input.target ? " → " + input.target : ""}`.slice(0, 160);
   // 卡片 {name} 占位符：当前会话的 Agent 显示名（解析失败由渲染层回退 HRD）
   const agentName = resolveAgentName(ctx);
-  const rec = (status, summary, exitCode = null, connId = null, opRef = null, connInstance = null) => {
+  const rec = (status, summary, exitCode = null, connId = null, opRef = null, connInstance = null, output = null) => {
     const id = rd.operations.recordHistory({
       tool: "file",
+      // kind 按 action 细分：stat 不再被 kindForTool(file)=copy 兜底成 copy
+      kind: input.action,
       label,
       connId,
       // 连接实例 id 在连接存活时取（withOperation 传入）；此时重查可能已释放落空。
@@ -47,6 +49,8 @@ export async function execute(input, ctx) {
       durationMs: Date.now() - started,
       exitCode,
       summary: String(summary || "").slice(0, 300),
+      // 结果文本统一进 output（卡片输出折叠区）；summary 只保留操作语义摘要
+      output: String(output || "").slice(0, 2048),
       // copy 分支：关联 withOperation 的 opId，卡片按 op_xxx 查完成态；
       // 缺失会导致 getHistory(op_xxx) 查不到（stat 用 h_id 主键不受影响）。
       opRef,
@@ -68,10 +72,11 @@ export async function execute(input, ctx) {
       const client = await rd.sshClient.sftp(connId);
       try {
         const st = await client.stat(path);
-        const hid = rec("ok", `${path}: ${st.isDirectory ? "directory" : "file"}, ${st.size} bytes`, null, connId);
+        const detail = `${path}:\n  type: ${st.isDirectory ? "directory" : "file"}\n  size: ${st.size} bytes\n  mode: 0o${st.mode?.toString(8) ?? "?"}\n  modified: ${st.modifyTime ?? "-"}`;
+        const hid = rec("ok", `${path}: ${st.isDirectory ? "directory" : "file"}, ${st.size} bytes`, null, connId, null, null, detail);
         return attachCard(
           {
-            content: [{ type: "text", text: `${path}:\n  type: ${st.isDirectory ? "directory" : "file"}\n  size: ${st.size} bytes\n  mode: 0o${st.mode?.toString(8) ?? "?"}\n  modified: ${st.modifyTime ?? "-"}` }],
+            content: [{ type: "text", text: detail }],
             details: st,
           },
           { opId: hid, label, summary: `${path}: ${st.isDirectory ? "directory" : "file"}, ${st.size} bytes` }
@@ -100,8 +105,9 @@ export async function execute(input, ctx) {
       if (src.kind === "local" && dst.kind === "local") {
         await fs.promises.mkdir(path.dirname(dst.path), { recursive: true });
         await fs.promises.copyFile(src.path, dst.path);
-        rec("ok", `Copied ${src.path} → ${dst.path}`);
-        return { content: [{ type: "text", text: `Copied ${src.path} → ${dst.path}` }] };
+        const sm = `Copied ${src.path} → ${dst.path}`;
+        rec("ok", sm, null, null, null, null, sm);
+        return { content: [{ type: "text", text: sm }] };
       }
 
       if (src.kind === "local" && dst.kind === "remote") {
@@ -125,7 +131,7 @@ export async function execute(input, ctx) {
             return;
           }
           const sm = `Uploaded ${src.path} → ${input.target}`;
-          rec("ok", sm, null, connId, out.opId, out.connInstance);
+          rec("ok", sm, null, connId, out.opId, out.connInstance, sm);
           // deferred 终态：完成唤醒（默认）或仅记录（wakeOnExit=false）
           wake.resolveDeferredWake({
             bus: ctx.bus ?? runtimeHolder.current?.bus,
@@ -185,7 +191,7 @@ export async function execute(input, ctx) {
               { opId: r.opId, label, summary: "operation killed" }
             );
           }
-          rec("ok", `Uploaded ${src.path} → ${input.target}`, null, connId, r.opId, r.connInstance);
+          rec("ok", `Uploaded ${src.path} → ${input.target}`, null, connId, r.opId, r.connInstance, `Uploaded ${src.path} → ${input.target}`);
           return attachCard(
             { content: [{ type: "text", text: `Uploaded ${src.path} → ${input.target}` }] },
             { opId: r.opId, label, summary: `Uploaded ${src.path} → ${input.target}` }
@@ -216,7 +222,7 @@ export async function execute(input, ctx) {
             return;
           }
           const sm = `Downloaded ${input.source} → ${dst.path}`;
-          rec("ok", sm, null, connId, out.opId, out.connInstance);
+          rec("ok", sm, null, connId, out.opId, out.connInstance, sm);
           // deferred 终态：完成唤醒（默认）或仅记录（wakeOnExit=false）
           wake.resolveDeferredWake({
             bus: ctx.bus ?? runtimeHolder.current?.bus,
@@ -276,7 +282,7 @@ export async function execute(input, ctx) {
             { opId: r.opId, label, summary: "operation killed" }
           );
         }
-        rec("ok", `Downloaded ${input.source} → ${dst.path}`, null, connId, r.opId, r.connInstance);
+        rec("ok", `Downloaded ${input.source} → ${dst.path}`, null, connId, r.opId, r.connInstance, `Downloaded ${input.source} → ${dst.path}`);
         return attachCard(
           { content: [{ type: "text", text: `Downloaded ${input.source} → ${dst.path}` }] },
           { opId: r.opId, label, summary: `Downloaded ${input.source} → ${dst.path}` }
@@ -333,7 +339,7 @@ export async function execute(input, ctx) {
             { opId: result.opId, label, summary: `cp failed (exit ${result.code})` }
           );
         }
-        rec("ok", `Copied ${input.source} → ${input.target}`, 0, srcRes.connId, result.opId, result.connInstance);
+        rec("ok", `Copied ${input.source} → ${input.target}`, 0, srcRes.connId, result.opId, result.connInstance, `Copied ${input.source} → ${input.target}`);
         return attachCard(
           { content: [{ type: "text", text: `Copied ${input.source} → ${input.target}` }] },
           { opId: result.opId, label, summary: `Copied ${input.source} → ${input.target}` }
@@ -376,7 +382,7 @@ export async function execute(input, ctx) {
         clientA.end();
         clientB.end();
       }
-      rec("ok", `Relayed ${input.source} → ${input.target}`, null, srcRes.connId, r.opId, r.connInstance);
+      rec("ok", `Relayed ${input.source} → ${input.target}`, null, srcRes.connId, r.opId, r.connInstance, `Relayed ${input.source} → ${input.target}`);
       return attachCard(
         { content: [{ type: "text", text: `Relayed ${input.source} → ${input.target}` }] },
         { opId: r.opId, label, summary: `Relayed ${input.source} → ${input.target}` }
