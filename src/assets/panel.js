@@ -865,20 +865,18 @@ function renderDetail(detail, profile, sessions, operations, history) {
         ])
       );
     } else {
-      // 历史批次：行1 = 端点名 + 状态；行2 = 操作数 · 最后活动时间
+      // 历史批次：行1 = 指示灯 + 端点名；行2 = 状态 · 操作数 · 最后活动时间
       const isNone = k === "none";
       const isSess = k === `${profile.id}#session`;
       // 短名：端点可读名（别名），完整 HRD id 只在悬停 title 出现
       const shortName = isNone ? "本地操作" : `${isSess ? "会话 · " : ""}${profile.name}`;
-      const titleTxt = isNone
-        ? `本地操作 · ${items.length} 条操作`
-        : `${shortName} · ${running ? "进行中" : "已断开"}`;
+      const titleTxt = shortName;
       const timeTxt = isNone
         ? ""
-        : `${items.length} 条操作 · ${tsShort(new Date(lastAt(k)).toISOString())}`;
+        : `${running ? "进行中" : "已断开"} · ${items.length} 条操作 · ${tsShort(new Date(lastAt(k)).toISOString())}`;
       head.push(
         el("span", { class: "conn-dot off" }),
-        el("span", { class: "conn-title", title: isNone ? titleTxt : `${titleTxt} · ${k}` }, [titleTxt]),
+        el("span", { class: "conn-title", title: isNone ? titleTxt : `${shortName} · ${running ? "进行中" : "已断开"} · ${k}` }, [titleTxt]),
         el("span", { class: "conn-meta", title: timeTxt }, [timeTxt])
       );
     }
