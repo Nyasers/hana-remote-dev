@@ -236,6 +236,14 @@ section("cleanupSessionLogs（昨日归档 + 空间兜底 + 活跃保护）");
   const hit = sessionLog.extractTarGz(gzPath, `${day(1)}/c.md`);
   check("按需提取内容一致", hit && hit.toString("utf8") === "x".repeat(500));
   check("提取不存在条目返回 null", sessionLog.extractTarGz(gzPath, `${day(1)}/nope.md`) === null);
+  // mtime 与目录日期错位（拷入/恢复的历史日志）：仍必须按目录日期归档，不被文件 mtime 带偏
+  const root5 = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean5-"));
+  mk(root5, day(1), ["x.md"]);
+  mk(root5, day(0), ["y.md"]);
+  const staleMtime = new Date(fs.statSync(path.join(root5, "sessions", day(0), "y.md")).mtimeMs + 60000);
+  fs.utimesSync(path.join(root5, "sessions", day(1), "x.md"), staleMtime, staleMtime);
+  sessionLog.cleanupSessionLogs(path.join(root5, "sessions"), { maxBytes: 0 });
+  check("mtime 倒挂仍按目录日期归档", !fs.existsSync(path.join(root5, "sessions", day(1))) && fs.existsSync(path.join(root5, "sessions", day(0), "y.md")));
   // 活跃引用保护：命中的组延迟归档，引用释放后归档
   const root2 = fs.mkdtempSync(path.join(os.tmpdir(), "hrd-clean2-"));
   mk(root2, day(1), ["a.md"]);

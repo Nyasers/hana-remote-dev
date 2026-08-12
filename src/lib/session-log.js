@@ -272,12 +272,13 @@ export function cleanupSessionLogs(dir, { maxBytes = SESSION_LOG_BYTES, retentio
         groups.push({ name: `flat-${d.name}`, files: [p], total: st.size, earliest: st.mtimeMs, dirPath: null });
       }
     }
-    groups.sort((a, b) => a.earliest - b.earliest);
-    // 组日期：日期目录名（YYYY-MM-DD → 当日 00:00 本地）；平铺组用最早 mtime
+    // 组日期：日期目录名（YYYY-MM-DD → 当日 00:00 本地）；平铺组用最早 mtime。
+    // 排序与归档判断统一按组日期，不依赖文件 mtime（拷入/恢复的历史日志 mtime 可能与目录日期错位，否则时间归档会失效）。
     const groupDate = (g) => {
       if (g.dirPath && /^\d{4}-\d{2}-\d{2}$/.test(g.name)) return new Date(`${g.name}T00:00:00`).getTime();
       return g.earliest;
     };
+    groups.sort((a, b) => groupDate(a) - groupDate(b));
     const cutoff = retentionDays > 0 ? Date.now() - retentionDays * 86400000 : 0;
     let total = groups.reduce((s, g) => s + g.total, 0);
     const hasActive = (g) => activePaths && g.files.some((f) => activePaths.has(f));
