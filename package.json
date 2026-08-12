@@ -1,6 +1,6 @@
 {
   "name": "hana-remote-dev",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "type": "module",
   "description": "SSH remote development plugin for Hanako",
   "dependencies": {
