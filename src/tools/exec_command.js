@@ -81,6 +81,7 @@ export async function execute(input, ctx) {
         // 实际结局更新同一条（exit / killed / disconnect / lost）。
         onClose: (info) => {
           if (info.sessionId !== sessionId) return;
+          const live = runtimeHolder.current;
           // 输出尾部拼进 summary：断开/结束后历史记录里能看到会话最终输出
           //（类似 subagent 返回结果，避免输出只活在会话卡里）。
           const tail = info.outputTail ? `\n\n── 输出尾部 ──\n${info.outputTail}` : "";
@@ -130,7 +131,6 @@ export async function execute(input, ctx) {
           }
           // 自动唤醒：会话结局 → deferred 终态（register 结局时动态决策策略，
           // 结果随 hana-background-result 直达；busy 排队与补投由宿主托管）。
-          const live = runtimeHolder.current;
           if (live?.bus) {
             // 会话日志已由 ssh-client 随运行增量落盘（createSession 时初始化、
             // close 时 finalize）；此处只取日志路径用于 result 的 HRD:// 引用。
