@@ -6,8 +6,8 @@
 //   socket.io.esm.min.js 已压缩，原样放行
 // loader 在构建进程内执行：无中间目录、无跨进程文件时序问题。
 // 注：HTML 模板保持 JS 模板字符串形态（静态部分 ~430 字符，独立压缩收益 < 0.2KB，不值得）
-import { minify } from "terser";
-import CleanCSS from "clean-css";
+// 压缩实现见 minify-assets.mjs（与 sync-release 的 app/ 压缩共用，单一事实源）
+import { minifyJs, minifyCss } from "./minify-assets.mjs";
 
 export default async function minifyLoader(content) {
   const callback = this.async();
@@ -15,14 +15,11 @@ export default async function minifyLoader(content) {
     const p = this.resourcePath;
     let out;
     if (p.endsWith(".css")) {
-      const r = new CleanCSS({ level: 2 }).minify(content);
-      if (r.errors.length) throw new Error(`clean-css: ${r.errors.join("; ")}`);
-      out = r.styles;
+      out = minifyCss(content);
     } else if (p.endsWith("socket.io.esm.min.js")) {
       out = content; // 已是压缩态
     } else if (p.endsWith(".js")) {
-      const r = await minify(content, { module: true });
-      out = r.code;
+      out = await minifyJs(content);
     } else {
       out = content;
     }
