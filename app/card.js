@@ -31,9 +31,38 @@
     return fetch(apiUrl(path), Object.assign({}, init || {}, { headers: headers }));
   }
 
-  // ── mini host SDK：高度自适应（iframe 贴合内容，避免"浏览器窗口"感）──
+
+  // ── mini host SDK（@hana/plugin-sdk 协议兼容，免构建）──
   var PARENT = window.parent;
   var HOST_ORIGIN = pageParams.get("hana-host-origin") || "*";
+  var hrdSeq = 0;
+
+  // 宿主 capability 请求：postMessage hana.plugin.ui + kind:"request"，宿主按
+  // manifest ui.hostCapabilities 白名单执行并回 response/error（如 clipboard.writeText）。
+  function hostRequest(type, payload) {
+    var id = "hrd-" + (++hrdSeq);
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () { cleanup(); reject(new Error("host 请求超时: " + type)); }, 8000);
+      function onMsg(e) {
+        if (e.source !== PARENT) return;
+        var m = e.data;
+        if (!m || m.id !== id || m.type !== type) return;
+        cleanup();
+        if (m.kind === "response") resolve(m.payload);
+        else if (m.kind === "error") reject(new Error((m.error && m.error.message) || "host error"));
+      }
+      function cleanup() {
+        window.removeEventListener("message", onMsg);
+        clearTimeout(timer);
+      }
+      window.addEventListener("message", onMsg);
+      PARENT.postMessage(
+        { protocol: "hana.plugin.ui", version: 1, id: id, kind: "request", type: type, payload: payload },
+        HOST_ORIGIN
+      );
+    });
+  }
+
   function reportSize() {
     try {
       // 必须用 body.scrollHeight（documentElement.scrollHeight 在内容不足时=视口高度）
@@ -214,12 +243,19 @@
     shellBuilt = true;
   }
 
-  // ── 复制命令：clipboard API → execCommand → 自动选中（多级降级） ──
-  // iframe 沙箱/权限策略可能拒绝 clipboard 写（opaque origin 或 Permissions-Policy），
-  // 最终兜底用 Selection 自动选中命令文本，提示用户手动 Ctrl+C——选择不需要权限，必然可达
+  // ── 复制命令：宿主 capability（clipboard.writeText）→ clipboard API → execCommand → 自动选中 ──
+  // 首选宿主桥接（manifest ui.hostCapabilities 已声明 clipboard.writeText，不受 iframe
+  // opaque origin / Permissions-Policy 限制）；hostRequest 失败（老宿主/白名单未放开）
+  // 时降级本地链路。最终兜底用 Selection 自动选中，选择不需要权限，必然可达。
   function copyCommand() {
     var text = root.querySelector(".op-sub-text").textContent || "";
     if (!text) return;
+    hostRequest("clipboard.writeText", { text: text })
+      .then(function () { doneCopy(true); })
+      .catch(function () { legacyCopy(text); });
+  }
+
+  function legacyCopy(text) {
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(text).then(function () { doneCopy(true); }, function () { selectAndHint(); });
       return;
