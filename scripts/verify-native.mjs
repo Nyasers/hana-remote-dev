@@ -1,4 +1,4 @@
-// verify-native.mjs <platform> — 校验 dist/native/*.node 是目标平台二进制（fail-closed）
+// verify-native.mjs <platform> — 校验 dist/app/native/*.node 是目标平台二进制（fail-closed）
 // 用途: CI 构建后自检，防止 copy-native 静默 skip / 平台错配 → "以为加速了其实没有"
 // 用法: node scripts/verify-native.mjs Windows-x64 | Linux-x64 | macOS-x64 | macOS-arm64
 // 魔数: PE = "MZ"; ELF = \x7fELF; Mach-O = CF FA ED FE（小端 MH_MAGIC_64）+ cputype 区分 x64/arm64
@@ -23,7 +23,7 @@ if (!EXPECT[platform]) {
 }
 
 const exp = EXPECT[platform];
-const files = ["native/sshcrypto.node", "native/cpufeatures.node"].map((f) => path.join(root, "dist", f));
+const files = ["app/native/sshcrypto.node", "app/native/cpufeatures.node"].map((f) => path.join(root, "dist", f));
 
 let ok = true;
 for (const f of files) {

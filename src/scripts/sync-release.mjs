@@ -1,6 +1,6 @@
 // src/scripts/sync-release.mjs — 构建后把静态文件同步进 dist/（发布包完整化）
 // dist 已由 rspack clean 清空，这里负责：
-//   JS（index.js loader + routes/*.js 壳 + native/bundle.cjs 主产物）统一过 terser
+//   JS（index.js loader + routes/*.js 壳 + app/bundle.cjs 主产物）统一过 terser
 //   manifest/skills 原样拷贝
 // 构建职责到此为止，部署到宿主目录由 dev slot / 手动完成。
 
@@ -14,7 +14,7 @@ const dist = path.join(root, "dist");
 
 // JS：全部过 terser（壳为 ESM 保留 module:true；bundle 为 CJS IIFE 用默认）
 const JS_ESM_ITEMS = ["index.js", "routes/api.js", "routes/ui.js", "routes/card.js"];
-const JS_CJS_ITEM = "native/bundle.cjs";
+const JS_CJS_ITEM = "app/bundle.cjs";
 
 for (const rel of JS_ESM_ITEMS) {
   const srcPath = path.join(root, rel);

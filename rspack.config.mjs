@@ -20,9 +20,10 @@ export default {
     path: DIST_DIR,
     // CJS bundle：宿主以 ESM 加载入口 index.js（壳），实现必须 .cjs 后缀
     // （Node 对 .cjs 强制 CJS 语义；.js 会被 ESM loader 解析，裸 require 崩溃）。
-    // 产物写进 native/（与 ssh2 原生 .node 同级）：bundle 内原生引用为同级相对 require，
+    // 产物写进 app/（面板资源同目录，应用本体自包含）：ssh2 原生 .node 随 bundle 走，
+    // 落 app/native/（bundle 内原生引用为 ./native/ 相对 require，copy-native 对齐）；
     // dist 根保持只放手写文件（index.js 壳 / manifest / routes / skills）。
-    filename: "native/bundle.cjs",
+    filename: "app/bundle.cjs",
     // module.exports = 默认导出类（宿主 new + onload）
     library: { type: "commonjs2", export: "default" },
     clean: true,
@@ -46,10 +47,11 @@ export default {
       if (/\.node$/.test(request)) {
         // 路径拉平：ssh2 的 sshcrypto 原 request 是 ./crypto/build/Release/，
         // cpu-features 原 request 是 ../build/Release/（相对其 lib/ 目录），
-        // 统一拉平到 ./（bundle.cjs 与 *.node 同处 native/，copy-native 对齐）
-        let merged = request.replace("./crypto/build/Release/", "./");
-        merged = merged.replace("../build/Release/", "./");
-        merged = merged.replace("./build/Release/", "./");
+        // 统一拉平到 ./native/（bundle.cjs 在 app/，*.node 在 app/native/，copy-native 对齐；
+        // require 相对 bundle 的 __dirname=app/ 解析）
+        let merged = request.replace("./crypto/build/Release/", "./native/");
+        merged = merged.replace("../build/Release/", "./native/");
+        merged = merged.replace("./build/Release/", "./native/");
         return callback(null, `commonjs ${merged}`);
       }
       callback();

@@ -15,9 +15,10 @@ const dist = path.join(root, "dist");
 
 const pairs = [
   // [source 相对路径, dist 内相对路径]
-  // 目标目录 native/：与 bundle.cjs 同级（rspack external 已把 .node 拉平为同级 require）
-  ["node_modules/ssh2/lib/protocol/crypto/build/Release/sshcrypto.node", "native/sshcrypto.node"],
-  ["node_modules/cpu-features/build/Release/cpufeatures.node", "native/cpufeatures.node"],
+  // 目标目录 app/native/：bundle 内 require('./native/*.node') 相对 app/ 解析
+  // （rspack external 已把 .node 拉平为 ./native/）
+  ["node_modules/ssh2/lib/protocol/crypto/build/Release/sshcrypto.node", "app/native/sshcrypto.node"],
+  ["node_modules/cpu-features/build/Release/cpufeatures.node", "app/native/cpufeatures.node"],
 ];
 
 let copied = 0;

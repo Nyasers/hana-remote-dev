@@ -1,7 +1,7 @@
 // package.mjs — 打包发布包：构建产物 → releases/<id>-<version>.zip + .sha256
 // devDep 仅 archiver（zip 容器，久经考验）；sha256 用 node 内置 crypto。全平台可跑。
 //
-// 产物形态（zip 根 = 插件根）：index.js / manifest.json / README.md / native/ / routes/ / skills/
+// 产物形态（zip 根 = 插件根）：index.js / manifest.json / README.md / app/（含 native/ 原生二进制）/ routes/
 // 流程：npm run build（产物必须新鲜）→ 临时文件打 zip → rename 进 releases/（中断不留半成品）→ sha256
 import fs from "node:fs";
 import path from "node:path";
@@ -30,7 +30,7 @@ function collectFiles() {
     ["manifest.json", path.join(root, "manifest.json")],
     ["README.md", path.join(root, "README.md")],
   ];
-  for (const dir of ["native", "routes", "app"]) {
+  for (const dir of ["routes", "app"]) {
     const p = path.join(dist, dir);
     if (fs.existsSync(p)) collectDir(dir, p, files);
   }
