@@ -1,10 +1,19 @@
-# Release — 三平台构建 + 单点发布（对齐宿主 openhanako build.yml 的设计）
+# Release — 三平台构建 + 分平台直传 release 资产（对齐宿主 openhanako build.yml 的设计）
 # 触发: push tag v*（version.mjs 打 tag 后自动触发）或手动 workflow_dispatch
 #
 # 关键设计（借鉴宿主）:
 #   - matrix include + fail-fast: false（三平台互不拖累）
-#   - release job 单点控制: pre-release 创建、上传、资产核验都在这一个 job（防并发覆盖）
-#   - Verify release assets 硬约束: 三平台 zip + sha256 缺一 CI fail（防 shell 写漏/构建挂）
+#   - 三 job 流水 create-release → build → verify:
+#     · create-release（仅 tag 场景）: 先建 pre-release（已存在则跳过，--generate-notes）
+#     · build 矩阵（needs create-release）: 各平台构建/核验/重命名后，tag 场景直接
+#       gh release upload 本平台 zip + sha256（--clobber 幂等，重复推送补传不报错）；
+#       dispatch 手动场景无 tag、无 release，产物走 upload-artifact 3 天窗口给人下载
+#     · verify（仅 tag 场景, needs build）: 单点收尾查 release 资产三平台 zip + sha256 齐全
+#   - 并发安全论证（打破原「release job 单点控制防并发覆盖」设计）:
+#     资产名带平台后缀（hana-remote-dev-<ver>-<platform>.zip），三平台文件名互不相同；
+#     gh release upload 对独立文件并发上传是安全的，只有同名覆盖才存在竞态，
+#     平台后缀天然隔离 → 各平台构建完即传不会互相覆盖。verify 仍单点收尾，
+#     保证「三平台 zip + sha256 缺一 CI fail」的硬约束不丢（防 shell 写漏/构建挂）
 #   - 平台限定文件名: hana-remote-dev-<ver>-<platform>.zip（防同名不同内容互相覆盖）
 #
 # 与宿主的差异（必须）:
@@ -24,7 +33,39 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 先建 release（仅 tag 场景）: build 矩阵 needs 它，保证各平台上传时 release 必已存在。
+  # dispatch 手动场景无 tag，本 job 被 if 跳过，build 照常跑（只产 artifact）。
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # 自动发布为 pre-release（不占 latest 标记，稳定版本手动标记）；已存在则跳过
+      - name: Create pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            echo "Release ${{ github.ref_name }} already exists, skipping create"
+          else
+            gh release create "${{ github.ref_name }}" \
+              --prerelease \
+              --title "${{ github.ref_name }}" \
+              --generate-notes
+          fi
+
   build:
+    needs: create-release
+    # create-release 仅在 tag 场景运行，dispatch 场景会被 skip；被 needs 的 job skip 会让
+    # 下游默认 if(success()) 一起 skip → 这里显式放行「非 failure」结果：
+    # success（tag）/ skipped（dispatch）都继续构建，create-release 真失败则不浪费三平台构建
+    if: ${{ needs.create-release.result != 'failure' }}
     strategy:
       fail-fast: false
       matrix:
@@ -36,6 +77,9 @@ jobs:
           - os: macos-latest
             platform: macOS-arm64
     runs-on: ${{ matrix.os }}
+    # tag 场景 gh release upload 本平台资产需要写权限
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v5
@@ -78,6 +122,21 @@ jobs:
           mv "$ZIP.sha256" "${ZIP%.zip}-${{ matrix.platform }}.zip.sha256"
           ls -la
 
+      # tag 场景直传本平台 zip + sha256 到 release（各平台并发上传独立文件，安全，
+      # 见顶部「并发安全论证」；--clobber 幂等，重复推送/补传不报错）。
+      # dispatch 手动场景无 tag 无 release，本步跳过，产物仍走下方 artifact 3 天窗口
+      - name: Upload release assets (tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          cd releases
+          ZIP=$(ls hana-remote-dev-*.zip | head -1)
+          [ -n "$ZIP" ] || { echo "::error::no zip to upload"; exit 1; }
+          gh release upload "${{ github.ref_name }}" "$ZIP" "$ZIP.sha256" --clobber
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
@@ -86,50 +145,21 @@ jobs:
           path: releases/hana-remote-dev-*.zip*
           if-no-files-found: error
 
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+  # 单点收尾（仅 tag 场景）: 查 release 资产三平台 zip + sha256 齐全，缺则删 release 并 fail
+  verify:
+    needs: [create-release, build]
+    # build 任一平台失败也进 verify → 资产不全即删 release，公开 release 不留残缺
+    # （与旧单点设计同保证）；create-release 失败时跳过（失败已由它自己报出，避免二次误报）
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.create-release.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-
-      # 自动发布为 pre-release（不占 latest 标记，稳定版本手动标记）；已存在则跳过
-      - name: Create pre-release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
-            echo "Release ${{ github.ref_name }} already exists, skipping create"
-          else
-            gh release create "${{ github.ref_name }}" \
-              --prerelease \
-              --title "${{ github.ref_name }}" \
-              --generate-notes
-          fi
-
-      # 单点上传三平台 zip + sha256（--clobber 幂等重传）
-      - name: Upload release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          find artifacts -type f \( -name '*.zip' -o -name '*.sha256' \) -print0 |
-            while IFS= read -r -d '' f; do
-              echo "  $f"
-              gh release upload "${{ github.ref_name }}" "$f" --clobber
-            done
-
-      # 硬约束：三平台 zip + sha256 必须齐全，缺一个 CI fail（draft 留给人手动检查）
+      # 硬约束：三平台 zip + sha256 必须齐全，缺一个 CI fail（draft 留给人手动检查）。
+      # 直接查 release 资产（gh release view --json assets），无需 download-artifact
       - name: Verify release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
