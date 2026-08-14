@@ -256,11 +256,12 @@
   }
 
   function legacyCopy(text) {
+    // 用户手势内 execCommand（textarea 法）最可靠，失败再依次退 clipboard API / 自动选中
+    if (execCopy(text)) { doneCopy(true); return; }
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(text).then(function () { doneCopy(true); }, function () { selectAndHint(); });
       return;
     }
-    if (execCopy(text)) { doneCopy(true); return; }
     selectAndHint();
   }
 
