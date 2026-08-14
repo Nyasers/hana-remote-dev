@@ -5,7 +5,7 @@ body {
   font-family: system-ui, -apple-system, "PingFang SC", sans-serif;
   font-size: 13px;
   color: var(--text, #3b3d3f);
-  background: transparent;
+  background: var(--overlay-subtle, rgba(0, 0, 0, 0.03));
   padding: 2px 8px;
   min-height: 0;
 }
