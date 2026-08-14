@@ -26,7 +26,7 @@ Hana 远程开发插件（SSH 连接 / 远程 exec / 文件 / 卡片渲染）。
 ### 0. 前置：工作区必须干净
 
 ```powershell
-cd E:\Hanako\workspace\Projects\hana-remote-dev
+cd E:\Hanako\workspace\Projects\plugins\hana-remote-dev
 git status --short
 ```
 
