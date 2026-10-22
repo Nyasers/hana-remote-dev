@@ -42,7 +42,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -82,10 +82,10 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -138,7 +138,7 @@ jobs:
           gh release upload "${{ github.ref_name }}" "$ZIP" "$ZIP.sha256" --clobber
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: hrd-${{ matrix.platform }}
           retention-days: 3
@@ -156,7 +156,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.1
 
       # 硬约束：三平台 zip + sha256 必须齐全，缺一个 CI fail（draft 留给人手动检查）。
       # 直接查 release 资产（gh release view --json assets），无需 download-artifact
