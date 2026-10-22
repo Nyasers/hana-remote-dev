@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # 依赖：单包仓库，npm（package-lock.json）。有 node-gyp 原生模块（cpu-features / ssh2），
+  # dependabot 只管版本号，原生编译仍由 `npm ci` 的 install script 完成。
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+      major:
+        update-types: ["major"]
+
+  # Actions：workflow 里 pin 的是具体补丁版，不靠浮动标签漂，靠这条提。
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      actions:
+        patterns: ["*"]
