@@ -4,14 +4,14 @@
   "type": "module",
   "description": "SSH remote development plugin for Hanako",
   "dependencies": {
-    "@rspack/cli": "^2.1.9",
-    "@rspack/core": "^2.1.9",
+    "@rspack/cli": "^2.2.9",
+    "@rspack/core": "^2.2.9",
     "archiver": "^8.0.0",
     "clean-css": "^5.3.3",
-    "socket.io": "^4.8.3",
-    "socket.io-client": "^4.8.3",
+    "socket.io": "^4.8.4",
+    "socket.io-client": "^4.8.4",
     "ssh2": "^1.17.0",
-    "terser": "^5.50.0"
+    "terser": "^5.51.2"
   },
   "trustedDependencies": [
     "cpu-features",
